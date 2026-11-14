@@ -1,0 +1,112 @@
+# ============================================================
+# Shipyard — .gitignore
+# ============================================================
+
+# ---------- Private project docs (kept local, not pushed) ----------
+# PRD, ARCHITECTURE, ROADMAP, PROGRESS and decisions/ stay on your machine.
+# Claude Code can still read them locally.
+/docs/
+
+# ---------- Secrets & environment ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+master.key
+
+# ---------- Claude Code (personal / machine-local) ----------
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/**/*.local.*
+
+# ---------- Go ----------
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+coverage.html
+go.work
+go.work.sum
+/vendor/
+
+# ---------- Frontend (web/) ----------
+web/node_modules/
+web/dist/
+web/.vite/
+web/coverage/
+web/playwright-report/
+web/test-results/
+web/blob-report/
+web/.env*
+!web/.env.example
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+*.tsbuildinfo
+
+# ---------- Runtime data (uploads, volumes, sources, backups) ----------
+/data/
+/tmp/
+*.tar.gz
+*.tgz
+*.zip
+*.dump
+*.sql.gz
+backups/
+
+# ---------- Docker / local overrides ----------
+docker-compose.override.yml
+docker-compose.local.yml
+.docker/
+
+# ---------- Caddy (local certs & state) ----------
+deploy/caddy-data/
+deploy/caddy-config/
+
+# ---------- Benchmarks & test output ----------
+bench/results/
+*.prof
+*.pprof
+/security/out/
+testdata/**/node_modules/
+testdata/**/__pycache__/
+testdata/**/.venv/
+
+# ---------- Python (sample apps, scripts) ----------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# ---------- Logs ----------
+*.log
+logs/
+
+# ---------- Editors & IDEs ----------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+.history/
+
+# ---------- OS files ----------
+.DS_Store
+Thumbs.db
+desktop.ini
