@@ -17,6 +17,7 @@ import (
 
 	"github.com/Uzair-23/shipyard/internal/api"
 	"github.com/Uzair-23/shipyard/internal/config"
+	"github.com/Uzair-23/shipyard/internal/jobs"
 	"github.com/Uzair-23/shipyard/internal/store"
 )
 
@@ -41,7 +42,9 @@ func run(args []string) error {
 		return runAPI(ctx)
 	case "migrate":
 		return runMigrate(ctx)
-	case "worker", "router":
+	case "worker":
+		return runWorker(ctx)
+	case "router":
 		slog.Info("starting", "role", role)
 		return nil
 	default:
@@ -79,6 +82,31 @@ func runAPI(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+func runWorker(ctx context.Context) error {
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	const concurrency int32 = 4
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("parse database url: %w", err)
+	}
+	poolCfg.MaxConns = jobs.MinPoolConns(concurrency) + 2
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
+	defer pool.Close()
+
+	w := &jobs.Worker{
+		Pool:        pool,
+		Concurrency: concurrency,
+		Handlers:    map[string]jobs.Handler{}, // build/start handlers arrive in later M1 tasks
+	}
+	return w.Run(ctx)
 }
 
 func runMigrate(ctx context.Context) error {

@@ -54,7 +54,18 @@ SET state = 'failed', last_error = @last_error::text, finished_at = now(), locke
 WHERE id = @id AND state = 'running' AND locked_by = @worker_id::text;
 
 -- name: ReleaseJob :execrows
--- Puts a job back without counting a failure (worker shutdown).
+-- Puts a job back without counting a failure (worker shutdown, app busy).
 UPDATE jobs
-SET state = 'queued', run_after = now(), locked_by = NULL, locked_until = NULL
+SET state        = 'queued',
+    run_after    = now() + sqlc.arg(delay_secs)::float8 * interval '1 second',
+    locked_by    = NULL,
+    locked_until = NULL
 WHERE id = @id AND state = 'running' AND locked_by = @worker_id::text;
+
+-- name: TryLockApp :one
+-- Session-level advisory lock serialising jobs per app (ADR 011). Must be
+-- released with UnlockApp on the same connection.
+SELECT pg_try_advisory_lock(hashtextextended(sqlc.arg(app_id)::uuid::text, 0));
+
+-- name: UnlockApp :one
+SELECT pg_advisory_unlock(hashtextextended(sqlc.arg(app_id)::uuid::text, 0));

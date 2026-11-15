@@ -27,7 +27,7 @@ type Worker struct {
 	Handlers map[string]Handler
 
 	ID           string        // default: hostname-pid
-	Concurrency  int           // default: 4
+	Concurrency  int32         // default: 4
 	Lease        time.Duration // default: 60s
 	Heartbeat    time.Duration // default: 20s
 	PollInterval time.Duration // default: 2s; fallback when no NOTIFY arrives
@@ -64,10 +64,22 @@ func (w *Worker) setDefaults() {
 	}
 }
 
+// MinPoolConns is the smallest pool a worker with the given concurrency can
+// run on: each running job holds one connection for its app lock and needs
+// others for heartbeats and claims; the listener uses its own connection.
+func MinPoolConns(concurrency int32) int32 {
+	return 2*concurrency + 1
+}
+
 // Run processes jobs until ctx is cancelled. In-flight jobs are released back
 // to the queue on shutdown.
-func (w *Worker) Run(ctx context.Context) {
+func (w *Worker) Run(ctx context.Context) error {
 	w.setDefaults()
+	if got, need := w.Pool.Config().MaxConns, MinPoolConns(w.Concurrency); got < need {
+		// Too few connections would starve heartbeats, lose leases and let
+		// other workers steal running jobs.
+		return fmt.Errorf("worker pool has %d max connections; concurrency %d needs at least %d", got, w.Concurrency, need)
+	}
 	kinds := make([]string, 0, len(w.Handlers))
 	for k := range w.Handlers {
 		kinds = append(kinds, k)
@@ -76,13 +88,14 @@ func (w *Worker) Run(ctx context.Context) {
 
 	wake := make(chan struct{}, w.Concurrency)
 	var wg sync.WaitGroup
-	wg.Add(1 + w.Concurrency)
+	wg.Add(1 + int(w.Concurrency))
 	go func() { defer wg.Done(); w.listen(ctx, wake) }()
 	for range w.Concurrency {
 		go func() { defer wg.Done(); w.loop(ctx, kinds, wake) }()
 	}
 	wg.Wait()
 	slog.Info("worker stopped", "worker_id", w.ID)
+	return nil
 }
 
 func (w *Worker) loop(ctx context.Context, kinds []string, wake <-chan struct{}) {
@@ -141,6 +154,31 @@ func (w *Worker) process(ctx context.Context, job store.Job) {
 		return
 	}
 
+	release := func(delay time.Duration) {
+		finish("release", func(c context.Context) (int64, error) {
+			return q.ReleaseJob(c, store.ReleaseJobParams{DelaySecs: delay.Seconds(), ID: job.ID, WorkerID: w.ID})
+		})
+	}
+
+	// Jobs for the same app never overlap (ADR 011). The lock is released
+	// only after the job's outcome is written (deferred below).
+	if job.AppID.Valid {
+		unlock, locked, err := w.lockApp(ctx, job.AppID)
+		switch {
+		case err != nil:
+			if ctx.Err() == nil {
+				log.Error("lock app", "app_id", job.AppID.String(), "error", err)
+			}
+			release(w.PollInterval)
+			return
+		case !locked:
+			log.Debug("app busy; deferring job", "app_id", job.AppID.String())
+			release(w.PollInterval)
+			return
+		}
+		defer unlock()
+	}
+
 	jobCtx, cancel := context.WithCancel(ctx)
 	hbDone := make(chan struct{})
 	go func() { defer close(hbDone); w.heartbeat(jobCtx, cancel, job.ID, log) }()
@@ -153,9 +191,7 @@ func (w *Worker) process(ctx context.Context, job store.Job) {
 	switch {
 	case ctx.Err() != nil:
 		log.Info("worker shutting down; releasing job")
-		finish("release", func(c context.Context) (int64, error) {
-			return q.ReleaseJob(c, store.ReleaseJobParams{ID: job.ID, WorkerID: w.ID})
-		})
+		release(0)
 	case err == nil:
 		log.Info("job done", "duration_ms", time.Since(start).Milliseconds())
 		finish("complete", func(c context.Context) (int64, error) {
@@ -200,6 +236,34 @@ func (w *Worker) heartbeat(ctx context.Context, cancel context.CancelFunc, id pg
 			}
 		}
 	}
+}
+
+// lockApp takes the app's session advisory lock on a dedicated connection.
+// When locked is true, unlock must be called to release it and return the
+// connection to the pool.
+func (w *Worker) lockApp(ctx context.Context, appID pgtype.UUID) (unlock func(), locked bool, err error) {
+	conn, err := w.Pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("acquire connection: %w", err)
+	}
+	locked, err = store.New(conn).TryLockApp(ctx, appID)
+	if err != nil || !locked {
+		conn.Release()
+		if err != nil {
+			return nil, false, fmt.Errorf("try advisory lock: %w", err)
+		}
+		return nil, false, nil
+	}
+	return func() {
+		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if ok, err := store.New(conn).UnlockApp(uctx, appID); err != nil || !ok {
+			// Closing the connection ends the session, which drops the lock.
+			slog.Warn("unlock app failed; closing connection", "app_id", appID.String(), "error", err)
+			_ = conn.Conn().Close(uctx)
+		}
+		conn.Release()
+	}, true, nil
 }
 
 func runHandler(ctx context.Context, h Handler, job store.Job) (err error) {

@@ -203,20 +203,48 @@ func (q *Queries) NotifyJobsNew(ctx context.Context) error {
 
 const releaseJob = `-- name: ReleaseJob :execrows
 UPDATE jobs
-SET state = 'queued', run_after = now(), locked_by = NULL, locked_until = NULL
-WHERE id = $1 AND state = 'running' AND locked_by = $2::text
+SET state        = 'queued',
+    run_after    = now() + $1::float8 * interval '1 second',
+    locked_by    = NULL,
+    locked_until = NULL
+WHERE id = $2 AND state = 'running' AND locked_by = $3::text
 `
 
 type ReleaseJobParams struct {
-	ID       pgtype.UUID
-	WorkerID string
+	DelaySecs float64
+	ID        pgtype.UUID
+	WorkerID  string
 }
 
-// Puts a job back without counting a failure (worker shutdown).
+// Puts a job back without counting a failure (worker shutdown, app busy).
 func (q *Queries) ReleaseJob(ctx context.Context, arg ReleaseJobParams) (int64, error) {
-	result, err := q.db.Exec(ctx, releaseJob, arg.ID, arg.WorkerID)
+	result, err := q.db.Exec(ctx, releaseJob, arg.DelaySecs, arg.ID, arg.WorkerID)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const tryLockApp = `-- name: TryLockApp :one
+SELECT pg_try_advisory_lock(hashtextextended($1::uuid::text, 0))
+`
+
+// Session-level advisory lock serialising jobs per app (ADR 011). Must be
+// released with UnlockApp on the same connection.
+func (q *Queries) TryLockApp(ctx context.Context, appID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, tryLockApp, appID)
+	var pg_try_advisory_lock bool
+	err := row.Scan(&pg_try_advisory_lock)
+	return pg_try_advisory_lock, err
+}
+
+const unlockApp = `-- name: UnlockApp :one
+SELECT pg_advisory_unlock(hashtextextended($1::uuid::text, 0))
+`
+
+func (q *Queries) UnlockApp(ctx context.Context, appID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, unlockApp, appID)
+	var pg_advisory_unlock bool
+	err := row.Scan(&pg_advisory_unlock)
+	return pg_advisory_unlock, err
 }

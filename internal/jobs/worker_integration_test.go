@@ -37,7 +37,8 @@ func runTests(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if testPool, err = pgxpool.New(ctx, url); err != nil {
+	// Each worker needs MinPoolConns; tests run two workers at once.
+	if testPool, err = pgxpool.New(ctx, url+"&pool_max_conns=24"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -66,7 +67,12 @@ func start(t *testing.T, workers ...*Worker) {
 	var wg sync.WaitGroup
 	for _, w := range workers {
 		wg.Add(1)
-		go func() { defer wg.Done(); w.Run(ctx) }()
+		go func() {
+			defer wg.Done()
+			if err := w.Run(ctx); err != nil {
+				t.Errorf("worker %s: %v", w.ID, err)
+			}
+		}()
 	}
 	t.Cleanup(func() { cancel(); wg.Wait() })
 }
@@ -297,7 +303,12 @@ func TestShutdownReleasesJob(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { w.Run(ctx); close(done) }()
+	go func() {
+		defer close(done)
+		if err := w.Run(ctx); err != nil {
+			t.Errorf("worker: %v", err)
+		}
+	}()
 	<-started
 	cancel()
 	<-done
@@ -317,5 +328,145 @@ func TestWorkerOnlyClaimsItsKinds(t *testing.T) {
 	waitFor(t, 10*time.Second, "own job done", func() bool { return getJob(t, mine.ID).State == "done" })
 	if got := getJob(t, other.ID); got.State != "queued" {
 		t.Fatalf("foreign job state = %s, want queued", got.State)
+	}
+}
+
+func createApp(t *testing.T, slug string) pgtype.UUID {
+	t.Helper()
+	var id pgtype.UUID
+	err := testPool.QueryRow(context.Background(),
+		`INSERT INTO apps (slug) VALUES ($1) ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug RETURNING id`, slug).Scan(&id)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	return id
+}
+
+func enqueueForApp(t *testing.T, kind string, appID pgtype.UUID) store.Job {
+	t.Helper()
+	job, err := Enqueue(context.Background(), testPool, store.EnqueueJobParams{Kind: kind, AppID: appID, MaxAttempts: 1})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	return job
+}
+
+func TestJobsForSameAppNeverOverlap(t *testing.T) {
+	resetJobs(t)
+	app := createApp(t, "serial-app")
+	const n = 10
+	var running, maxRunning, total atomic.Int32
+	h := map[string]Handler{"serial": func(context.Context, store.Job) error {
+		cur := running.Add(1)
+		for {
+			m := maxRunning.Load()
+			if cur <= m || maxRunning.CompareAndSwap(m, cur) {
+				break
+			}
+		}
+		time.Sleep(30 * time.Millisecond)
+		running.Add(-1)
+		total.Add(1)
+		return nil
+	}}
+	for range n {
+		enqueueForApp(t, "serial", app)
+	}
+	start(t, fastWorker("w1", h), fastWorker("w2", h))
+
+	waitFor(t, 30*time.Second, "all jobs done", func() bool { return countState(t, "done") == n })
+	if maxRunning.Load() != 1 || total.Load() != n {
+		t.Fatalf("max concurrent=%d total=%d, want 1 and %d", maxRunning.Load(), total.Load(), n)
+	}
+	var attempts, reclaims int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT coalesce(sum(attempts),0), coalesce(sum(reclaims),0) FROM jobs`).Scan(&attempts, &reclaims); err != nil {
+		t.Fatalf("sum: %v", err)
+	}
+	if attempts != 0 || reclaims != 0 {
+		t.Fatalf("deferrals counted as attempts=%d reclaims=%d, want 0 and 0", attempts, reclaims)
+	}
+}
+
+func TestJobsForDifferentAppsRunInParallel(t *testing.T) {
+	resetJobs(t)
+	const n = 4
+	var arrived atomic.Int32
+	h := map[string]Handler{"parallel": func(ctx context.Context, _ store.Job) error {
+		arrived.Add(1)
+		// Succeeds only if all n jobs are running at the same time.
+		deadline := time.Now().Add(5 * time.Second)
+		for arrived.Load() < n {
+			if time.Now().After(deadline) {
+				return errors.New("jobs for different apps did not run concurrently")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return nil
+	}}
+	for i := range n {
+		enqueueForApp(t, "parallel", createApp(t, fmt.Sprintf("parallel-%d", i)))
+	}
+	start(t, fastWorker("w1", h)) // concurrency 4
+
+	waitFor(t, 15*time.Second, "all jobs finished", func() bool { return countState(t, "done")+countState(t, "failed") == n })
+	if got := countState(t, "done"); got != n {
+		t.Fatalf("%d of %d jobs done; they did not run in parallel", got, n)
+	}
+}
+
+// While another session holds the app lock, the job is deferred (not failed,
+// not run); once the lock is free it runs.
+func TestBusyAppDefersJob(t *testing.T) {
+	resetJobs(t)
+	ctx := context.Background()
+	app := createApp(t, "busy-app")
+
+	holder, err := testPool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer holder.Release()
+	if ok, err := store.New(holder).TryLockApp(ctx, app); err != nil || !ok {
+		t.Fatalf("hold app lock: ok=%v err=%v", ok, err)
+	}
+
+	var calls atomic.Int32
+	job := enqueueForApp(t, "deferred", app)
+	start(t, fastWorker("w1", map[string]Handler{"deferred": func(context.Context, store.Job) error {
+		calls.Add(1)
+		return nil
+	}}))
+
+	time.Sleep(1 * time.Second)
+	if calls.Load() != 0 {
+		t.Fatal("job ran while its app was locked")
+	}
+	if got := getJob(t, job.ID); got.State == "failed" || got.Attempts != 0 || got.Reclaims != 0 {
+		t.Fatalf("while busy: state=%s attempts=%d reclaims=%d", got.State, got.Attempts, got.Reclaims)
+	}
+
+	if ok, err := store.New(holder).UnlockApp(ctx, app); err != nil || !ok {
+		t.Fatalf("release app lock: ok=%v err=%v", ok, err)
+	}
+	waitFor(t, 10*time.Second, "job done", func() bool { return getJob(t, job.ID).State == "done" })
+	if calls.Load() != 1 {
+		t.Fatalf("handler ran %d times, want 1", calls.Load())
+	}
+}
+
+func TestRunRejectsTooSmallPool(t *testing.T) {
+	cfg := testPool.Config().Copy()
+	cfg.MaxConns = 4
+	small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("small pool: %v", err)
+	}
+	defer small.Close()
+
+	w := fastWorker("w1", nil)
+	w.Pool = small
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("Run accepted a pool smaller than MinPoolConns")
 	}
 }

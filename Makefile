@@ -1,7 +1,7 @@
 SHIPYARD_DATABASE_URL ?= postgres://shipyard:shipyard-dev@localhost:5434/shipyard?sslmode=disable
 export SHIPYARD_DATABASE_URL
 
-.PHONY: dev build test test-integration lint fmt migrate sqlc
+.PHONY: dev build test test-integration lint fmt migrate sqlc worker
 
 dev:
 	docker compose up -d --build
@@ -26,6 +26,10 @@ fmt:
 
 migrate:
 	go run ./cmd/shipyard migrate
+
+# M1: the worker runs on the host (ADR 011); it moves into compose in M2.
+worker:
+	go run ./cmd/shipyard worker
 
 sqlc:
 	sqlc generate
