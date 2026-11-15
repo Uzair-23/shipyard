@@ -15,7 +15,7 @@
 *.key
 *.crt
 *.p12
-secrets/
+/secrets/
 master.key
 
 # ---------- Claude Code (personal / machine-local) ----------
