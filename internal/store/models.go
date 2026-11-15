@@ -8,6 +8,64 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type App struct {
+	ID              pgtype.UUID
+	OwnerID         pgtype.UUID
+	Slug            string
+	Runtime         pgtype.Text
+	IdleTimeoutS    int32
+	DesiredState    string
+	Status          string
+	CurrentDeployID pgtype.UUID
+	LastRequestAt   pgtype.Timestamptz
+	DeletedAt       pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+}
+
+type Deploy struct {
+	ID             pgtype.UUID
+	AppID          pgtype.UUID
+	Seq            int32
+	SourceRef      string
+	ConfigSnapshot []byte
+	ImageDigest    pgtype.Text
+	State          string
+	Error          pgtype.Text
+	CreatedBy      pgtype.UUID
+	CreatedAt      pgtype.Timestamptz
+	FinishedAt     pgtype.Timestamptz
+}
+
+type Instance struct {
+	ID           pgtype.UUID
+	DeployID     pgtype.UUID
+	ContainerID  pgtype.Text
+	HostPort     pgtype.Int4
+	State        string
+	StartedAt    pgtype.Timestamptz
+	StoppedAt    pgtype.Timestamptz
+	ExitCode     pgtype.Int4
+	RestartCount int32
+	CreatedAt    pgtype.Timestamptz
+}
+
+type Job struct {
+	ID          pgtype.UUID
+	Kind        string
+	AppID       pgtype.UUID
+	Payload     []byte
+	State       string
+	Attempts    int32
+	MaxAttempts int32
+	Reclaims    int32
+	RunAfter    pgtype.Timestamptz
+	LockedBy    pgtype.Text
+	LockedUntil pgtype.Timestamptz
+	LastError   pgtype.Text
+	CreatedAt   pgtype.Timestamptz
+	FinishedAt  pgtype.Timestamptz
+}
+
 type User struct {
 	ID           pgtype.UUID
 	Email        string
