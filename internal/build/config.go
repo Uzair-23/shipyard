@@ -94,10 +94,8 @@ func ParseConfig(data []byte) (Config, error) {
 		if len(cfg.Start) > maxStartLen {
 			return Config{}, configErr("start is longer than %d characters", maxStartLen)
 		}
-		for _, r := range cfg.Start {
-			if r < 0x20 || r == 0x7f {
-				return Config{}, configErr("start must be a single line without control characters")
-			}
+		if !validStart(cfg.Start) {
+			return Config{}, configErr("start must be a single line without control characters")
 		}
 		if cfg.Runtime == Static {
 			return Config{}, configErr("start cannot be set for static sites; they are served by Shipyard's file server")

