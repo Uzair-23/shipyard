@@ -1,4 +1,4 @@
-SHIPYARD_DATABASE_URL ?= postgres://shipyard:shipyard-dev@localhost:5432/shipyard?sslmode=disable
+SHIPYARD_DATABASE_URL ?= postgres://shipyard:shipyard-dev@localhost:5434/shipyard?sslmode=disable
 export SHIPYARD_DATABASE_URL
 
 .PHONY: dev build test test-integration lint fmt migrate sqlc
