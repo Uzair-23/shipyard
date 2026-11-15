@@ -1,7 +1,7 @@
 SHIPYARD_DATABASE_URL ?= postgres://shipyard:shipyard-dev@localhost:5434/shipyard?sslmode=disable
 export SHIPYARD_DATABASE_URL
 
-.PHONY: dev build test test-integration lint fmt migrate sqlc worker
+.PHONY: dev build test test-integration test-security lint fmt migrate sqlc worker
 
 dev:
 	docker compose up -d --build
@@ -17,6 +17,9 @@ test:
 # -p 1: starting testcontainers from several packages at once is flaky on Docker Desktop.
 test-integration:
 	go test -tags=integration -count=1 -p 1 ./...
+
+test-security:
+	go test -count=1 ./security/...
 
 lint:
 	golangci-lint run ./...
