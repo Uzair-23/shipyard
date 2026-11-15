@@ -8,14 +8,11 @@ import (
 	"fmt"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pressly/goose/v3"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/Uzair-23/shipyard/internal/testdb"
 	"github.com/Uzair-23/shipyard/migrations"
 )
 
@@ -31,25 +28,16 @@ func TestMain(m *testing.M) {
 
 func runTests(m *testing.M) int {
 	ctx := context.Background()
-	ctr, err := postgres.Run(ctx, "postgres:16",
-		postgres.WithDatabase("shipyard"),
-		postgres.WithUsername("shipyard"),
-		postgres.WithPassword("test"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(60*time.Second)),
+	var (
+		terminate func()
+		err       error
 	)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "start postgres:", err)
+	if testURL, terminate, err = testdb.Start(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	defer func() { _ = testcontainers.TerminateContainer(ctr) }()
+	defer terminate()
 
-	if testURL, err = ctr.ConnectionString(ctx, "sslmode=disable"); err != nil {
-		fmt.Fprintln(os.Stderr, "connection string:", err)
-		return 1
-	}
 	// Migrations apply cleanly, and applying them twice is a no-op.
 	for i := 0; i < 2; i++ {
 		if err := Migrate(ctx, testURL); err != nil {
