@@ -1,0 +1,4 @@
+# Always LF in the working tree: Dockerfile templates (line continuations),
+# golden files and shell scripts break with CRLF.
+* text=auto eol=lf
+*.tar.gz binary
