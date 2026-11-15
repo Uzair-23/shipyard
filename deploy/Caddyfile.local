@@ -1,0 +1,7 @@
+{
+	auto_https off
+}
+
+http://shipyard.localhost {
+	reverse_proxy shipyard-api:8080
+}

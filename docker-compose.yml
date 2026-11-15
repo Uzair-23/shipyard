@@ -1,0 +1,74 @@
+x-shipyard: &shipyard
+  image: shipyard:dev
+  build: .
+  environment:
+    SHIPYARD_DATABASE_URL: postgres://shipyard:${POSTGRES_PASSWORD:-shipyard-dev}@postgres:5432/shipyard?sslmode=disable
+    SHIPYARD_BASE_DOMAIN: ${SHIPYARD_BASE_DOMAIN:-shipyard.localhost}
+    SHIPYARD_APPS_DOMAIN: ${SHIPYARD_APPS_DOMAIN:-apps.localhost}
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: shipyard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shipyard-dev}
+      POSTGRES_DB: shipyard
+    ports:
+      - "5432:5432" # dev only
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shipyard -d shipyard"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Separate Postgres for user databases (ADR 008). Not published to the host.
+  apps-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: shipyard_apps
+      POSTGRES_PASSWORD: ${APPS_DB_PASSWORD:-apps-db-dev}
+      POSTGRES_DB: postgres
+    volumes:
+      - appsdb:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shipyard_apps -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Local image registry (not published to the host).
+  registry:
+    image: registry:2
+    volumes:
+      - registry:/var/lib/registry
+
+  migrate:
+    <<: *shipyard
+    command: ["migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  shipyard-api:
+    <<: *shipyard
+    command: ["api"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/Caddyfile.local:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - shipyard-api
+
+volumes:
+  pgdata:
+  appsdb:
+  registry:
