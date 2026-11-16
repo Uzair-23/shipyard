@@ -2,6 +2,20 @@
 	auto_https off
 }
 
+# Dashboard and API. Always browse http://shipyard.localhost (not :5173) so the
+# session cookie has the right host.
 http://shipyard.localhost {
-	reverse_proxy shipyard-api:8080
+	@api path /api/* /auth/* /healthz
+	handle @api {
+		reverse_proxy shipyard-api:8080
+	}
+	# Dev: the Vite server on the host. (The demo build serves web/dist from the API.)
+	handle {
+		reverse_proxy host.docker.internal:5173
+	}
+}
+
+# App traffic goes to the router on the host (ADR 014).
+http://*.apps.localhost {
+	reverse_proxy host.docker.internal:8081
 }

@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,6 +32,7 @@ import (
 	"github.com/Uzair-23/shipyard/internal/apps"
 	"github.com/Uzair-23/shipyard/internal/build"
 	"github.com/Uzair-23/shipyard/internal/jobs"
+	"github.com/Uzair-23/shipyard/internal/router"
 	"github.com/Uzair-23/shipyard/internal/runtime"
 	"github.com/Uzair-23/shipyard/internal/store"
 	"github.com/Uzair-23/shipyard/internal/testdb"
@@ -113,8 +115,9 @@ func packDir(t *testing.T, dir string) []byte {
 
 // stack runs the API and a worker (build + start handlers) sharing one data dir.
 type stack struct {
-	server   *httptest.Server
-	pipeline *apps.Pipeline
+	server    *httptest.Server
+	pipeline  *apps.Pipeline
+	routerURL string // the router, reached with a Host header
 }
 
 func newStack(t *testing.T) stack {
@@ -143,7 +146,21 @@ func newStack(t *testing.T) stack {
 			t.Errorf("worker: %v", err)
 		}
 	})
-	return stack{server: srv, pipeline: pipeline}
+
+	rln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rdone := make(chan error, 1)
+	rt := router.New(testPool, "apps.localhost", "")
+	go func() { rdone <- rt.Serve(ctx, rln) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-rdone; err != nil {
+			t.Errorf("router: %v", err)
+		}
+	})
+	return stack{server: srv, pipeline: pipeline, routerURL: "http://" + rln.Addr().String()}
 }
 
 func (s stack) post(t *testing.T, path, contentType string, body io.Reader) (int, []byte) {
@@ -246,7 +263,44 @@ func TestSampleAppsDeployAndServe(t *testing.T) {
 			if resp.StatusCode != http.StatusOK || !strings.Contains(string(page), sample.want) {
 				t.Fatalf("GET / = %d %q, want 200 containing %q", resp.StatusCode, page, sample.want)
 			}
+
+			// The same app through the router, by Host header. The route arrives via
+			// NOTIFY route_changes from the worker's promote step (no manual reload).
+			via := getViaRouter(t, s.routerURL, sample.slug)
+			if via.status != http.StatusOK || !strings.Contains(via.body, sample.want) {
+				t.Fatalf("via router = %d %q, want 200 containing %q", via.status, via.body, sample.want)
+			}
 		})
+	}
+}
+
+type routed struct {
+	status int
+	body   string
+}
+
+// getViaRouter requests / from the app's host name, retrying briefly while the
+// route notification propagates.
+func getViaRouter(t *testing.T, routerURL, slug string) routed {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		req, err := http.NewRequest(http.MethodGet, routerURL+"/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = slug + ".apps.localhost"
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK || time.Now().After(deadline) {
+				return routed{resp.StatusCode, string(body)}
+			}
+		} else if time.Now().After(deadline) {
+			t.Fatalf("GET via router: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
