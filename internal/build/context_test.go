@@ -180,9 +180,10 @@ func keys(m map[string]*tar.Header) []string {
 }
 
 func TestSanitize(t *testing.T) {
-	in := "ok\tline\nx\x00y \xff\xfe \x1b]52;c;ZXZpbA==\x07 \x1b[31mred\x1b[0m \u0085nel \u009bcsi\r\nend"
+	in := "ok\tline\nx\x00y \xff\xfe \x1b]52;c;ZXZpbA==\x07 \x1b[31mred\x1b[0m \u0085nel \u009bcsi " +
+		"bidi\u202egnp.exe zero\u200bwidth bom\ufeff\r\nend"
 	got := Sanitize(in)
-	for _, bad := range []string{"\x00", "\x1b", "\x07", "\r", "\u0085", "\u009b", "\xff"} {
+	for _, bad := range []string{"\x00", "\x1b", "\x07", "\r", "\u0085", "\u009b", "\xff", "\u202e", "\u200b", "\ufeff"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("Sanitize kept %q: %q", bad, got)
 		}

@@ -93,15 +93,14 @@ func TestStartRunsHardenedContainer(t *testing.T) {
 	if err := f.pipeline.Start(context.Background(), startJob(id)); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if d := getDeploy(t, id); d.state != "starting" {
-		t.Fatalf("deploy state = %s, want starting (health check marks it live)", d.state)
+	if d := getDeploy(t, id); d.state != "live" {
+		t.Fatalf("deploy state = %s, want live", d.state)
 	}
-	var appStatus string
-	if err := testPool.QueryRow(context.Background(), `SELECT status FROM apps WHERE id = $1`, f.appID).Scan(&appStatus); err != nil || appStatus != "starting" {
-		t.Fatalf("app status = %q, %v", appStatus, err)
+	if st, cur := appState(t, f); st != "running" || cur != id.String() {
+		t.Fatalf("app status=%q current=%q, want running/%s", st, cur, id.String())
 	}
 	ins := instancesFor(t, id)
-	if len(ins) != 1 || ins[0].containerID == "" || ins[0].hostPort == 0 || ins[0].state != "starting" {
+	if len(ins) != 1 || ins[0].containerID == "" || ins[0].hostPort == 0 || ins[0].state != "running" {
 		t.Fatalf("instances = %+v", ins)
 	}
 
@@ -275,21 +274,52 @@ func normalizedArchive(t *testing.T, files map[string]string) []byte {
 	return b
 }
 
+// builtDeployWithImage creates a built deploy for a custom image; its health
+// path is /etc/hostname (served by busybox httpd -h /).
 func builtDeployWithImage(t *testing.T, f fixture, seq int, digest string) pgtype.UUID {
 	t.Helper()
 	var id pgtype.UUID
 	if err := testPool.QueryRow(context.Background(),
-		`INSERT INTO deploys (app_id, seq, source_ref, state, image_digest) VALUES ($1, $2, $3, 'built', $4) RETURNING id`,
+		`INSERT INTO deploys (app_id, seq, source_ref, state, image_digest, config_snapshot)
+		 VALUES ($1, $2, $3, 'built', $4, '{"runtime": "static", "health": "/etc/hostname"}') RETURNING id`,
 		f.appID, seq, "sha256:"+strings.Repeat("0", 64), digest).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
 }
 
+func appState(t *testing.T, f fixture) (status, currentDeploy string) {
+	t.Helper()
+	var cur pgtype.UUID
+	if err := testPool.QueryRow(context.Background(), `SELECT status, current_deploy_id FROM apps WHERE id = $1`, f.appID).Scan(&status, &cur); err != nil {
+		t.Fatal(err)
+	}
+	if cur.Valid {
+		currentDeploy = cur.String()
+	}
+	return status, currentDeploy
+}
+
+func containersOf(t *testing.T, deploy pgtype.UUID) []string {
+	t.Helper()
+	res, err := testDocker.ContainerList(context.Background(), client.ContainerListOptions{
+		All: true, Filters: make(client.Filters).Add("label", runtime.LabelDeployID+"="+deploy.String()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(res.Items))
+	for i, c := range res.Items {
+		ids[i] = c.ID
+	}
+	return ids
+}
+
 // An image VOLUME gets a tmpfs instead of a writable anonymous volume.
 func TestStartCoversImageVolumes(t *testing.T) {
 	f := newFixture(t, "image-volume")
-	digest := buildCustom(t, f, "vol", "FROM busybox\nLABEL shipyard.app_id="+f.appID.String()+"\nVOLUME /data\nUSER 10001:10001\nCMD [\"httpd\", \"-f\", \"-p\", \"8080\", \"-h\", \"/tmp\"]\n")
+	// busybox httpd serving / so the health path /etc/hostname returns 200.
+	digest := buildCustom(t, f, "vol", "FROM busybox\nLABEL shipyard.app_id="+f.appID.String()+"\nVOLUME /data\nUSER 10001:10001\nCMD [\"httpd\", \"-f\", \"-p\", \"8080\", \"-h\", \"/\"]\n")
 	id := builtDeployWithImage(t, f, 1, digest)
 	if err := f.pipeline.Start(context.Background(), startJob(id)); err != nil {
 		t.Fatalf("Start: %v", err)

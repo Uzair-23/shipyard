@@ -244,14 +244,16 @@ func (t *tailBuffer) WriteString(s string) {
 func (t *tailBuffer) String() string { return Sanitize(t.buf.String()) }
 
 // Sanitize makes attacker-controlled text safe to store in Postgres and show
-// in a terminal or browser.
+// in a terminal or browser: valid UTF-8 without control characters (except
+// newline and tab) or invisible format characters (bidi overrides,
+// zero-width characters) that could make text render differently.
 func Sanitize(s string) string {
 	s = strings.ToValidUTF8(s, "")
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
 			return r
 		}
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return -1
 		}
 		return r

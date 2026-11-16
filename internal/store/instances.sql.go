@@ -11,6 +11,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const activeInstancesOfSupersededDeploys = `-- name: ActiveInstancesOfSupersededDeploys :many
+SELECT i.id FROM instances i JOIN deploys d ON d.id = i.deploy_id
+WHERE d.app_id = $1::uuid AND d.state = 'superseded' AND i.state IN ('starting', 'running')
+`
+
+// Instances that must be stopped because their deploy was superseded.
+func (q *Queries) ActiveInstancesOfSupersededDeploys(ctx context.Context, appID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, activeInstancesOfSupersededDeploys, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createInstance = `-- name: CreateInstance :one
 INSERT INTO instances (deploy_id) VALUES ($1)
 RETURNING id, deploy_id, container_id, host_port, state, started_at, stopped_at, exit_code, restart_count, created_at
@@ -70,6 +96,46 @@ func (q *Queries) GetActiveInstance(ctx context.Context, deployID pgtype.UUID) (
 	return i, err
 }
 
+const lockAppForPromotion = `-- name: LockAppForPromotion :exec
+SELECT id FROM apps WHERE id = $1 FOR UPDATE
+`
+
+// Serialises promotions of one app inside the promoting transaction.
+func (q *Queries) LockAppForPromotion(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockAppForPromotion, id)
+	return err
+}
+
+const markDeployHealthCheck = `-- name: MarkDeployHealthCheck :execrows
+UPDATE deploys SET state = 'health_check'
+WHERE id = $1 AND state IN ('starting', 'health_check')
+`
+
+func (q *Queries) MarkDeployHealthCheck(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markDeployHealthCheck, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markDeployLive = `-- name: MarkDeployLive :execrows
+UPDATE deploys SET state = 'live', finished_at = now()
+WHERE deploys.id = $1::uuid AND deploys.state = 'health_check'
+  AND NOT EXISTS (
+      SELECT 1 FROM deploys newer
+      WHERE newer.app_id = deploys.app_id AND newer.state = 'live' AND newer.seq > deploys.seq)
+`
+
+// Newest wins: a deploy never goes live over a newer live deploy of the app.
+func (q *Queries) MarkDeployLive(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markDeployLive, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markDeployStarting = `-- name: MarkDeployStarting :execrows
 UPDATE deploys SET state = 'starting'
 WHERE id = $1 AND state IN ('built', 'starting')
@@ -83,17 +149,56 @@ func (q *Queries) MarkDeployStarting(ctx context.Context, id pgtype.UUID) (int64
 	return result.RowsAffected(), nil
 }
 
-const setAppStatus = `-- name: SetAppStatus :exec
-UPDATE apps SET status = $1::text WHERE id = $2
+const markDeploySupersededIfPending = `-- name: MarkDeploySupersededIfPending :execrows
+UPDATE deploys SET state = 'superseded', finished_at = now()
+WHERE id = $1 AND state IN ('starting', 'health_check')
 `
 
-type SetAppStatusParams struct {
-	Status string
-	ID     pgtype.UUID
+// An older deploy that lost the race to a newer live one.
+func (q *Queries) MarkDeploySupersededIfPending(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markDeploySupersededIfPending, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-func (q *Queries) SetAppStatus(ctx context.Context, arg SetAppStatusParams) error {
-	_, err := q.db.Exec(ctx, setAppStatus, arg.Status, arg.ID)
+const restoreAppStatus = `-- name: RestoreAppStatus :exec
+UPDATE apps SET status = CASE
+    WHEN EXISTS (SELECT 1 FROM deploys d WHERE d.app_id = $1::uuid AND d.state = 'live') THEN 'running'
+    ELSE 'stopped' END
+WHERE apps.id = $1::uuid
+`
+
+// After a failed deploy: running if a live deploy remains, else stopped.
+func (q *Queries) RestoreAppStatus(ctx context.Context, appID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, restoreAppStatus, appID)
+	return err
+}
+
+const setAppLive = `-- name: SetAppLive :exec
+UPDATE apps SET current_deploy_id = $1, status = 'running' WHERE id = $2
+`
+
+type SetAppLiveParams struct {
+	DeployID pgtype.UUID
+	ID       pgtype.UUID
+}
+
+func (q *Queries) SetAppLive(ctx context.Context, arg SetAppLiveParams) error {
+	_, err := q.db.Exec(ctx, setAppLive, arg.DeployID, arg.ID)
+	return err
+}
+
+const setAppStarting = `-- name: SetAppStarting :exec
+UPDATE apps SET status = 'starting'
+WHERE apps.id = $1::uuid
+  AND NOT EXISTS (SELECT 1 FROM deploys d WHERE d.app_id = $1::uuid AND d.state = 'live')
+`
+
+// An app that already serves a live deploy keeps showing "running" during a redeploy.
+func (q *Queries) SetAppStarting(ctx context.Context, appID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, setAppStarting, appID)
 	return err
 }
 
@@ -111,5 +216,39 @@ type SetInstanceContainerParams struct {
 
 func (q *Queries) SetInstanceContainer(ctx context.Context, arg SetInstanceContainerParams) error {
 	_, err := q.db.Exec(ctx, setInstanceContainer, arg.ContainerID, arg.HostPort, arg.ID)
+	return err
+}
+
+const setInstanceState = `-- name: SetInstanceState :exec
+UPDATE instances SET state = $1::text,
+    stopped_at = CASE WHEN $1::text IN ('stopped', 'failed') THEN now() ELSE stopped_at END
+WHERE id = $2
+`
+
+type SetInstanceStateParams struct {
+	State string
+	ID    pgtype.UUID
+}
+
+func (q *Queries) SetInstanceState(ctx context.Context, arg SetInstanceStateParams) error {
+	_, err := q.db.Exec(ctx, setInstanceState, arg.State, arg.ID)
+	return err
+}
+
+const supersedeOtherLiveDeploys = `-- name: SupersedeOtherLiveDeploys :exec
+UPDATE deploys SET state = 'superseded'
+WHERE deploys.app_id = $1::uuid AND deploys.state = 'live' AND deploys.id <> $2::uuid
+  AND deploys.seq < (SELECT k.seq FROM deploys k WHERE k.id = $2::uuid)
+`
+
+type SupersedeOtherLiveDeploysParams struct {
+	AppID  pgtype.UUID
+	KeepID pgtype.UUID
+}
+
+// Must run before MarkDeployLive (one live deploy per app, unique index).
+// Only older deploys are superseded; MarkDeployLive refuses to go live over a newer one.
+func (q *Queries) SupersedeOtherLiveDeploys(ctx context.Context, arg SupersedeOtherLiveDeploysParams) error {
+	_, err := q.db.Exec(ctx, supersedeOtherLiveDeploys, arg.AppID, arg.KeepID)
 	return err
 }

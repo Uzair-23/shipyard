@@ -145,7 +145,7 @@ func TestDeployAndInstanceConstraints(t *testing.T) {
 	}
 }
 
-// TestMigrationsDownAndUp runs last-in-file on purpose: it drops every table and recreates them.
+// TestMigrationsDownAndUp drops every table and recreates them; tests after it see empty tables.
 func TestMigrationsDownAndUp(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("pgx", testURL)
@@ -164,4 +164,18 @@ func TestMigrationsDownAndUp(t *testing.T) {
 	if _, err := provider.Up(ctx); err != nil {
 		t.Fatalf("up after down: %v", err)
 	}
+}
+
+// One live deploy per app is enforced by a partial unique index.
+func TestOnlyOneLiveDeployPerApp(t *testing.T) {
+	ctx := context.Background()
+	var appID string
+	if err := testPool.QueryRow(ctx, `INSERT INTO apps (slug) VALUES ('one-live') RETURNING id`).Scan(&appID); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, `INSERT INTO deploys (app_id, seq, source_ref, state) VALUES ($1, 1, 'x', 'live')`, appID)
+	if err := exec(t, `INSERT INTO deploys (app_id, seq, source_ref, state) VALUES ($1, 2, 'y', 'live')`, appID); err == nil {
+		t.Fatal("a second live deploy for the same app was accepted")
+	}
+	mustExec(t, `INSERT INTO deploys (app_id, seq, source_ref, state) VALUES ($1, 3, 'z', 'superseded')`, appID)
 }

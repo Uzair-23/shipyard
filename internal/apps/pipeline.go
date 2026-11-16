@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -54,6 +55,9 @@ func SourceRelPath(appID pgtype.UUID, sourceRef string) (string, error) {
 // wrap the real engine to inject failures.
 type containerEngine interface {
 	Start(ctx context.Context, spec runtime.Spec) (runtime.Instance, error)
+	WaitReady(ctx context.Context, ins runtime.Instance, healthPath string, timeout time.Duration) error
+	LogTail(ctx context.Context, containerID string, lines, maxBytes int) (string, error)
+	Stop(ctx context.Context, instanceID string) error
 	Remove(ctx context.Context, instanceID string) error
 	RuntimeName() string
 }
@@ -64,6 +68,8 @@ type Pipeline struct {
 	Builder *build.Builder
 	Engine  containerEngine // normally *runtime.Engine
 	DataDir string
+
+	HealthTimeout time.Duration // default runtime.HealthTimeout (30s)
 }
 
 // Handlers returns the job handlers to register with a jobs.Worker.
