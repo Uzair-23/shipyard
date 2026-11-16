@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Uzair-23/shipyard/internal/apps"
+	"github.com/Uzair-23/shipyard/internal/auth"
 	"github.com/Uzair-23/shipyard/internal/build"
 	"github.com/Uzair-23/shipyard/internal/jobs"
 	"github.com/Uzair-23/shipyard/internal/store"
@@ -61,31 +62,45 @@ func ValidateSlug(slug string) string {
 	return ""
 }
 
-// Apps serves the temporary unauthenticated app endpoints (M1; auth arrives in M3).
+// Apps serves the control-plane API: accounts, apps and deploys.
 // It only writes desired state and enqueues jobs: it never talks to Docker.
 type Apps struct {
 	Pool    *pgxpool.Pool
 	DataDir string
 	Limits  build.Limits // zero value means build.DefaultLimits
 
+	// AppsDomain is the suffix apps are served under (e.g. apps.localhost), for app URLs.
+	AppsDomain string
+
 	// BaseDomain is the dashboard host (e.g. shipyard.localhost). Browser requests
 	// whose Origin is any other site, including app subdomains, are refused.
 	BaseDomain string
 
-	uploads chan struct{}
+	sessions auth.Sessions
+	uploads  chan struct{}
 }
 
 // NewApps builds the handler set.
 func NewApps(pool *pgxpool.Pool, dataDir, baseDomain string) *Apps {
-	return &Apps{Pool: pool, DataDir: dataDir, BaseDomain: baseDomain, Limits: build.DefaultLimits,
-		uploads: make(chan struct{}, maxUploadConcurrency)}
+	return &Apps{Pool: pool, DataDir: dataDir, BaseDomain: baseDomain, AppsDomain: "apps.localhost",
+		Limits: build.DefaultLimits, sessions: auth.Sessions{Pool: pool}, uploads: make(chan struct{}, maxUploadConcurrency)}
 }
 
 func (a *Apps) mount(r chi.Router) {
-	r.Group(func(g chi.Router) {
-		g.Use(a.sameOriginOnly)
-		g.Post("/api/v1/apps", a.createApp)
-		g.Post("/api/v1/apps/{slug}/deploys", a.createDeploy)
+	r.Route("/api/v1", func(v chi.Router) {
+		v.Use(a.sameOriginOnly) // the CSRF protection for every route, mutating or not
+		v.Post("/auth/signup", a.signup)
+		v.Post("/auth/login", a.login)
+		v.Post("/auth/logout", a.logout)
+		v.Group(func(g chi.Router) {
+			g.Use(a.requireUser)
+			g.Get("/me", a.me)
+			g.Get("/apps", a.listApps)
+			g.Post("/apps", a.createApp)
+			g.Get("/apps/{slug}", a.getApp)
+			g.Patch("/apps/{slug}", a.patchApp)
+			g.Post("/apps/{slug}/deploys", a.createDeploy)
+		})
 	})
 }
 
@@ -123,24 +138,18 @@ func internalError(w http.ResponseWriter, what string, err error) {
 }
 
 func (a *Apps) createApp(w http.ResponseWriter, r *http.Request) {
-	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "send a JSON body with Content-Type: application/json")
-		return
-	}
 	var req struct {
 		Slug string `json:"slug"`
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBody))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", `body must be JSON like {"slug":"my-app"}`)
+	if !decodeJSON(w, r, &req, `{"slug":"my-app"}`) {
 		return
 	}
 	if msg := ValidateSlug(req.Slug); msg != "" {
 		writeError(w, http.StatusBadRequest, "invalid_slug", msg)
 		return
 	}
-	app, err := store.New(a.Pool).CreateApp(r.Context(), req.Slug)
+	user, _ := userFrom(r.Context())
+	_, err := store.New(a.Pool).CreateApp(r.Context(), store.CreateAppParams{Slug: req.Slug, OwnerID: user.ID})
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		writeError(w, http.StatusConflict, "slug_taken", "an app with this slug already exists; choose another")
@@ -150,9 +159,7 @@ func (a *Apps) createApp(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "create app", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"slug": app.Slug, "status": app.Status, "created_at": app.CreatedAt.Time.UTC().Format(time.RFC3339),
-	})
+	a.writeApp(w, r, http.StatusCreated, req.Slug)
 }
 
 func (a *Apps) createDeploy(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +180,8 @@ func (a *Apps) createDeploy(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), uploadTimeout)
 	defer cancel()
 	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(uploadTimeout)) // unsupported in tests
-	appID, err := store.New(a.Pool).GetAppIDBySlug(ctx, slug)
+	user, _ := userFrom(ctx)
+	appID, err := store.New(a.Pool).GetOwnedAppID(ctx, store.GetOwnedAppIDParams{Slug: slug, OwnerID: user.ID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "not_found", "app not found")
 		return
@@ -210,7 +218,7 @@ func (a *Apps) createDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deploy, err := a.recordDeploy(ctx, slug, ref)
+	deploy, err := a.recordDeploy(ctx, user, slug, ref)
 	if err != nil {
 		// The stored file is kept even if recording fails: another deploy may use the
 		// same content-addressed file. Unreferenced sources are garbage collected (M9).
@@ -307,14 +315,15 @@ type errBusy struct{}
 
 func (errBusy) Error() string { return "deploy in progress" }
 
-func (a *Apps) recordDeploy(ctx context.Context, slug, ref string) (store.CreateDeployRow, error) {
+func (a *Apps) recordDeploy(ctx context.Context, user auth.User, slug, ref string) (store.CreateDeployRow, error) {
 	var out store.CreateDeployRow
 	err := pgx.BeginFunc(ctx, a.Pool, func(tx pgx.Tx) error {
 		q := store.New(tx)
-		appID, err := q.LockAppBySlug(ctx, slug)
+		app, err := q.LockOwnedApp(ctx, store.LockOwnedAppParams{Slug: slug, OwnerID: user.ID})
 		if err != nil {
 			return err
 		}
+		appID := app.ID
 		if busy, err := q.HasUnfinishedDeploy(ctx, appID); err != nil {
 			return fmt.Errorf("check unfinished deploys: %w", err)
 		} else if busy {

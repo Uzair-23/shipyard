@@ -12,27 +12,20 @@ import (
 )
 
 const createApp = `-- name: CreateApp :one
-INSERT INTO apps (slug) VALUES ($1)
-RETURNING id, slug, status, created_at
+INSERT INTO apps (slug, owner_id) VALUES ($1, $2)
+RETURNING id
 `
 
-type CreateAppRow struct {
-	ID        pgtype.UUID
-	Slug      string
-	Status    string
-	CreatedAt pgtype.Timestamptz
+type CreateAppParams struct {
+	Slug    string
+	OwnerID pgtype.UUID
 }
 
-func (q *Queries) CreateApp(ctx context.Context, slug string) (CreateAppRow, error) {
-	row := q.db.QueryRow(ctx, createApp, slug)
-	var i CreateAppRow
-	err := row.Scan(
-		&i.ID,
-		&i.Slug,
-		&i.Status,
-		&i.CreatedAt,
-	)
-	return i, err
+func (q *Queries) CreateApp(ctx context.Context, arg CreateAppParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, createApp, arg.Slug, arg.OwnerID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const createDeploy = `-- name: CreateDeploy :one
@@ -64,12 +57,87 @@ func (q *Queries) CreateDeploy(ctx context.Context, arg CreateDeployParams) (Cre
 	return i, err
 }
 
-const getAppIDBySlug = `-- name: GetAppIDBySlug :one
-SELECT id FROM apps WHERE slug = $1 AND deleted_at IS NULL
+const failUnfinishedDeploys = `-- name: FailUnfinishedDeploys :exec
+UPDATE deploys SET state = 'failed', error = 'the app was deleted', finished_at = now()
+WHERE app_id = $1 AND state IN ('queued', 'building', 'built', 'starting', 'health_check')
 `
 
-func (q *Queries) GetAppIDBySlug(ctx context.Context, slug string) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, getAppIDBySlug, slug)
+// Deleting an app: pending build/start jobs find their deploy failed and do nothing.
+func (q *Queries) FailUnfinishedDeploys(ctx context.Context, appID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, failUnfinishedDeploys, appID)
+	return err
+}
+
+const getOwnedApp = `-- name: GetOwnedApp :one
+SELECT a.id, a.slug, a.status, a.desired_state, a.idle_timeout_s, a.created_at,
+       cd.seq AS current_seq, cd.state AS current_state, cd.finished_at AS current_finished_at,
+       coalesce(ld.seq, 0)::int AS latest_seq, coalesce(ld.state, '')::text AS latest_state, ld.error AS latest_error,
+       ld.created_at AS latest_created_at, ld.finished_at AS latest_finished_at
+FROM apps a
+LEFT JOIN deploys cd ON cd.id = a.current_deploy_id
+LEFT JOIN LATERAL (
+    SELECT seq, state, error, created_at, finished_at FROM deploys
+    WHERE app_id = a.id ORDER BY seq DESC LIMIT 1
+) ld ON true
+WHERE a.slug = $1 AND a.owner_id = $2 AND a.deleted_at IS NULL
+`
+
+type GetOwnedAppParams struct {
+	Slug    string
+	OwnerID pgtype.UUID
+}
+
+type GetOwnedAppRow struct {
+	ID                pgtype.UUID
+	Slug              string
+	Status            string
+	DesiredState      string
+	IdleTimeoutS      int32
+	CreatedAt         pgtype.Timestamptz
+	CurrentSeq        pgtype.Int4
+	CurrentState      pgtype.Text
+	CurrentFinishedAt pgtype.Timestamptz
+	LatestSeq         int32
+	LatestState       string
+	LatestError       pgtype.Text
+	LatestCreatedAt   pgtype.Timestamptz
+	LatestFinishedAt  pgtype.Timestamptz
+}
+
+func (q *Queries) GetOwnedApp(ctx context.Context, arg GetOwnedAppParams) (GetOwnedAppRow, error) {
+	row := q.db.QueryRow(ctx, getOwnedApp, arg.Slug, arg.OwnerID)
+	var i GetOwnedAppRow
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Status,
+		&i.DesiredState,
+		&i.IdleTimeoutS,
+		&i.CreatedAt,
+		&i.CurrentSeq,
+		&i.CurrentState,
+		&i.CurrentFinishedAt,
+		&i.LatestSeq,
+		&i.LatestState,
+		&i.LatestError,
+		&i.LatestCreatedAt,
+		&i.LatestFinishedAt,
+	)
+	return i, err
+}
+
+const getOwnedAppID = `-- name: GetOwnedAppID :one
+SELECT id FROM apps WHERE slug = $1 AND owner_id = $2 AND deleted_at IS NULL
+`
+
+type GetOwnedAppIDParams struct {
+	Slug    string
+	OwnerID pgtype.UUID
+}
+
+// Every app route looks the app up through its owner: someone else's app is "not found".
+func (q *Queries) GetOwnedAppID(ctx context.Context, arg GetOwnedAppIDParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getOwnedAppID, arg.Slug, arg.OwnerID)
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
@@ -89,14 +157,97 @@ func (q *Queries) HasUnfinishedDeploy(ctx context.Context, appID pgtype.UUID) (b
 	return exists, err
 }
 
-const lockAppBySlug = `-- name: LockAppBySlug :one
-SELECT id FROM apps WHERE slug = $1 AND deleted_at IS NULL FOR UPDATE
+const listOwnedApps = `-- name: ListOwnedApps :many
+SELECT slug, status, created_at FROM apps
+WHERE owner_id = $1 AND deleted_at IS NULL
+ORDER BY created_at DESC
+LIMIT 200
 `
 
-// Serialises deploy creation for one app inside the creating transaction.
-func (q *Queries) LockAppBySlug(ctx context.Context, slug string) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, lockAppBySlug, slug)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
+type ListOwnedAppsRow struct {
+	Slug      string
+	Status    string
+	CreatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListOwnedApps(ctx context.Context, ownerID pgtype.UUID) ([]ListOwnedAppsRow, error) {
+	rows, err := q.db.Query(ctx, listOwnedApps, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOwnedAppsRow
+	for rows.Next() {
+		var i ListOwnedAppsRow
+		if err := rows.Scan(&i.Slug, &i.Status, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockOwnedApp = `-- name: LockOwnedApp :one
+SELECT id, current_deploy_id FROM apps
+WHERE slug = $1 AND owner_id = $2 AND deleted_at IS NULL
+FOR UPDATE
+`
+
+type LockOwnedAppParams struct {
+	Slug    string
+	OwnerID pgtype.UUID
+}
+
+type LockOwnedAppRow struct {
+	ID              pgtype.UUID
+	CurrentDeployID pgtype.UUID
+}
+
+// Serialises changes to one app inside the changing transaction.
+func (q *Queries) LockOwnedApp(ctx context.Context, arg LockOwnedAppParams) (LockOwnedAppRow, error) {
+	row := q.db.QueryRow(ctx, lockOwnedApp, arg.Slug, arg.OwnerID)
+	var i LockOwnedAppRow
+	err := row.Scan(&i.ID, &i.CurrentDeployID)
+	return i, err
+}
+
+const setDesiredState = `-- name: SetDesiredState :exec
+UPDATE apps SET desired_state = $1::text WHERE id = $2
+`
+
+type SetDesiredStateParams struct {
+	DesiredState string
+	ID           pgtype.UUID
+}
+
+func (q *Queries) SetDesiredState(ctx context.Context, arg SetDesiredStateParams) error {
+	_, err := q.db.Exec(ctx, setDesiredState, arg.DesiredState, arg.ID)
+	return err
+}
+
+const setIdleTimeout = `-- name: SetIdleTimeout :exec
+UPDATE apps SET idle_timeout_s = $1 WHERE id = $2
+`
+
+type SetIdleTimeoutParams struct {
+	IdleTimeoutS int32
+	ID           pgtype.UUID
+}
+
+func (q *Queries) SetIdleTimeout(ctx context.Context, arg SetIdleTimeoutParams) error {
+	_, err := q.db.Exec(ctx, setIdleTimeout, arg.IdleTimeoutS, arg.ID)
+	return err
+}
+
+const softDeleteApp = `-- name: SoftDeleteApp :exec
+UPDATE apps SET deleted_at = now(), desired_state = 'stopped' WHERE id = $1
+`
+
+// The slug is released (unique only among non-deleted apps); a stop job removes the containers.
+func (q *Queries) SoftDeleteApp(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, softDeleteApp, id)
+	return err
 }

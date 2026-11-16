@@ -67,9 +67,11 @@ func runAPI(ctx context.Context) error {
 	}
 	defer pool.Close()
 
+	apps := api.NewApps(pool, cfg.DataDir, cfg.BaseDomain)
+	apps.AppsDomain = cfg.AppsDomain
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(pool, api.NewApps(pool, cfg.DataDir, cfg.BaseDomain)),
+		Handler:           api.NewRouter(pool, apps),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    64 << 10,

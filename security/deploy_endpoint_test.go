@@ -59,8 +59,17 @@ func TestDeployEndpointRejectsMaliciousUploads(t *testing.T) {
 	dataDir := t.TempDir()
 	h := api.NewRouter(nil, api.NewApps(pool, dataDir, "shipyard.localhost"))
 
+	signupReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/signup", strings.NewReader(`{"email":"attacker@example.com","password":"correct-horse-battery"}`))
+	signupReq.Header.Set("Content-Type", "application/json")
+	signupRec := httptest.NewRecorder()
+	h.ServeHTTP(signupRec, signupReq)
+	cookies := signupRec.Result().Cookies()
+	if signupRec.Code != http.StatusCreated || len(cookies) == 0 {
+		t.Fatalf("could not sign up: %d %s", signupRec.Code, signupRec.Body)
+	}
 	create := httptest.NewRequest(http.MethodPost, "/api/v1/apps", strings.NewReader(`{"slug":"victim-app"}`))
 	create.Header.Set("Content-Type", "application/json")
+	create.AddCookie(cookies[0])
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, create)
 	if rec.Code != http.StatusCreated {
@@ -90,6 +99,7 @@ func TestDeployEndpointRejectsMaliciousUploads(t *testing.T) {
 			_ = mw.Close()
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/victim-app/deploys", &body)
 			req.Header.Set("Content-Type", mw.FormDataContentType())
+			req.AddCookie(cookies[0])
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest {

@@ -66,6 +66,13 @@ type Job struct {
 	FinishedAt  pgtype.Timestamptz
 }
 
+type Session struct {
+	TokenHash []byte
+	UserID    pgtype.UUID
+	ExpiresAt pgtype.Timestamptz
+	CreatedAt pgtype.Timestamptz
+}
+
 type User struct {
 	ID           pgtype.UUID
 	Email        string

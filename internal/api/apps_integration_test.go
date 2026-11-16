@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,13 +55,46 @@ type env struct {
 	api     *Apps
 	handler http.Handler
 	dataDir string
+	cookie  *http.Cookie // session of the default test user
+}
+
+var userSeq atomic.Int32
+
+// serve sends req as the default test user.
+func (e env) serve(rec *httptest.ResponseRecorder, req *http.Request) {
+	if e.cookie != nil {
+		req.AddCookie(e.cookie)
+	}
+	e.handler.ServeHTTP(rec, req)
+}
+
+// signup registers a new user and returns the session cookie.
+func signup(t *testing.T, h http.Handler, email string) *http.Cookie {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"email": email, "password": "correct-horse-battery"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/signup", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("signup %s: %d %s", email, rec.Code, rec.Body)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "shipyard_session" {
+			return c
+		}
+	}
+	t.Fatal("signup set no session cookie")
+	return nil
 }
 
 func newEnv(t *testing.T) env {
 	t.Helper()
 	dir := t.TempDir()
 	a := NewApps(testPool, dir, "shipyard.localhost")
-	return env{api: a, handler: NewRouter(fakePinger{}, a), dataDir: dir}
+	h := NewRouter(fakePinger{}, a)
+	email := fmt.Sprintf("user%d@example.com", userSeq.Add(1))
+	return env{api: a, handler: h, dataDir: dir, cookie: signup(t, h, email)}
 }
 
 func targz(t *testing.T, entries ...tar.Header) []byte {
@@ -99,7 +133,7 @@ func (e env) createApp(t *testing.T, slug string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/apps", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	e.handler.ServeHTTP(rec, req)
+	e.serve(rec, req)
 	return rec
 }
 
@@ -118,7 +152,7 @@ func (e env) deploy(t *testing.T, slug, field string, archive []byte) *httptest.
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/"+slug+"/deploys", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	rec := httptest.NewRecorder()
-	e.handler.ServeHTTP(rec, req)
+	e.serve(rec, req)
 	return rec
 }
 
@@ -168,7 +202,7 @@ func TestCreateApp(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/apps", strings.NewReader(b.body))
 		req.Header.Set("Content-Type", b.ctype)
 		rec := httptest.NewRecorder()
-		e.handler.ServeHTTP(rec, req)
+		e.serve(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d", b.name, rec.Code)
 		}
@@ -267,7 +301,7 @@ func TestDeployRejections(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/reject-me/deploys", strings.NewReader("raw"))
 	req.Header.Set("Content-Type", "application/gzip")
 	rec := httptest.NewRecorder()
-	e.handler.ServeHTTP(rec, req)
+	e.serve(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("not multipart: status = %d", rec.Code)
 	}
@@ -365,7 +399,7 @@ func TestCrossOriginRequestsRefused(t *testing.T) {
 		req.Header.Set("Content-Type", mw.FormDataContentType())
 		req.Header.Set("Origin", origin)
 		rec := httptest.NewRecorder()
-		e.handler.ServeHTTP(rec, req)
+		e.serve(rec, req)
 		if rec.Code != http.StatusForbidden || errCode(t, rec) != "forbidden_origin" {
 			t.Errorf("Origin %q: status = %d", origin, rec.Code)
 		}
@@ -378,7 +412,7 @@ func TestCrossOriginRequestsRefused(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "http://shipyard.localhost:5173")
 	rec := httptest.NewRecorder()
-	e.handler.ServeHTTP(rec, req)
+	e.serve(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Errorf("dashboard origin: status = %d body %s", rec.Code, rec.Body)
 	}

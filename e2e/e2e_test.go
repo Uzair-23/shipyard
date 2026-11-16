@@ -115,6 +115,7 @@ func packDir(t *testing.T, dir string) []byte {
 
 // stack runs the API and a worker (build + start handlers) sharing one data dir.
 type stack struct {
+	cookie    *http.Cookie // session of the test user
 	server    *httptest.Server
 	pipeline  *apps.Pipeline
 	routerURL string // the router, reached with a Host header
@@ -160,12 +161,37 @@ func newStack(t *testing.T) stack {
 			t.Errorf("router: %v", err)
 		}
 	})
-	return stack{server: srv, pipeline: pipeline, routerURL: "http://" + rln.Addr().String()}
+	st := stack{server: srv, pipeline: pipeline, routerURL: "http://" + rln.Addr().String()}
+	st.cookie = st.signup(t, fmt.Sprintf("e2e-%d@example.com", time.Now().UnixNano()))
+	return st
+}
+
+func (s stack) signup(t *testing.T, email string) *http.Cookie {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"email": email, "password": "correct-horse-battery"})
+	resp, err := http.Post(s.server.URL+"/api/v1/auth/signup", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	for _, c := range resp.Cookies() {
+		if c.Name == "shipyard_session" && resp.StatusCode == http.StatusCreated {
+			return c
+		}
+	}
+	t.Fatalf("signup failed: %d", resp.StatusCode)
+	return nil
 }
 
 func (s stack) post(t *testing.T, path, contentType string, body io.Reader) (int, []byte) {
 	t.Helper()
-	resp, err := http.Post(s.server.URL+path, contentType, body)
+	req, err := http.NewRequest(http.MethodPost, s.server.URL+path, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.AddCookie(s.cookie)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
