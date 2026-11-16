@@ -58,17 +58,9 @@ func (p *Pipeline) Start(ctx context.Context, job store.Job) error {
 	default:
 		return nil
 	}
-	repo := p.Builder.Repository(d.AppID.String())
-	if !d.ImageDigest.Valid || len(d.ImageDigest.String) <= len(repo) ||
-		d.ImageDigest.String[:len(repo)] != repo || !digestSuffixRE.MatchString(d.ImageDigest.String[len(repo):]) {
-		return fmt.Errorf("deploy %s has image %q, want %s@sha256:<digest>", id.String(), d.ImageDigest.String, repo)
-	}
-	var plan build.Plan
-	if err := json.Unmarshal(d.ConfigSnapshot, &plan); err != nil {
-		return fmt.Errorf("decode config snapshot of deploy %s: %w", id.String(), err)
-	}
-	if plan.Health == "" {
-		return fmt.Errorf("config snapshot of deploy %s has no health path", id.String())
+	image, plan, err := p.runInfo(d)
+	if err != nil {
+		return err
 	}
 	if err := q.SetAppStarting(ctx, d.AppID); err != nil {
 		return fmt.Errorf("set app status: %w", err)
@@ -81,7 +73,13 @@ func (p *Pipeline) Start(ctx context.Context, job store.Job) error {
 		return fmt.Errorf("get or create instance: %w", err)
 	}
 
-	started, err := p.startInstance(ctx, d.AppID.String(), id.String(), ins.ID.String(), d.ImageDigest.String, log)
+	started, err := p.startInstance(ctx, d.AppID.String(), id.String(), ins.ID.String(), image, log)
+	var exitedAtStart *runtime.ExitedError
+	if errors.As(err, &exitedAtStart) {
+		// The app crashed before it could be probed: the same as failing its health check.
+		p.abandon(ctx, d.AppID, id, ins.ID, p.crashMessage(ctx, started.ContainerID, err, log))
+		return nil
+	}
 	if err != nil {
 		if ctx.Err() == nil && job.Attempts+1 >= job.MaxAttempts {
 			log.Error("start failed for good", "error", err)
@@ -104,15 +102,40 @@ func (p *Pipeline) Start(ctx context.Context, job store.Job) error {
 			return err // shutdown or lost lease: retried, and the check runs again
 		}
 		// The app's fault: no retry. Keep its last output for the user.
-		msg := "deploy failed: " + err.Error()
-		if tail, terr := p.Engine.LogTail(context.WithoutCancel(ctx), started.ContainerID, 50, 4<<10); terr == nil && tail != "" {
-			msg += "\n--- last app output ---\n" + tail
-		}
-		log.Info("deploy failed its health check", "reason", err)
-		p.abandon(ctx, d.AppID, id, ins.ID, msg)
+		p.abandon(ctx, d.AppID, id, ins.ID, p.crashMessage(ctx, started.ContainerID, err, log))
 		return nil
 	}
 	return p.promote(ctx, d.AppID, id, ins.ID, log)
+}
+
+// crashMessage is the user-facing text for a deploy whose app failed its health
+// check or exited: the reason plus the app's last output.
+func (p *Pipeline) crashMessage(ctx context.Context, containerID string, reason error, log *slog.Logger) string {
+	msg := "deploy failed: " + reason.Error()
+	if tail, err := p.Engine.LogTail(context.WithoutCancel(ctx), containerID, 50, 4<<10); err == nil && tail != "" {
+		msg += "\n--- last app output ---\n" + tail
+	}
+	log.Info("deploy failed its health check", "reason", reason)
+	return msg
+}
+
+// runInfo returns the image to run for a built deploy and its stored plan. The
+// image must be this app's repository pinned by digest, so neither a tag
+// overwritten in the registry nor a wrong row can make it run other code.
+func (p *Pipeline) runInfo(d store.GetDeployForBuildRow) (string, build.Plan, error) {
+	repo := p.Builder.Repository(d.AppID.String())
+	if !d.ImageDigest.Valid || len(d.ImageDigest.String) <= len(repo) ||
+		d.ImageDigest.String[:len(repo)] != repo || !digestSuffixRE.MatchString(d.ImageDigest.String[len(repo):]) {
+		return "", build.Plan{}, fmt.Errorf("deploy %s has image %q, want %s@sha256:<digest>", d.ID.String(), d.ImageDigest.String, repo)
+	}
+	var plan build.Plan
+	if err := json.Unmarshal(d.ConfigSnapshot, &plan); err != nil {
+		return "", build.Plan{}, fmt.Errorf("decode config snapshot of deploy %s: %w", d.ID.String(), err)
+	}
+	if plan.Health == "" {
+		return "", build.Plan{}, fmt.Errorf("config snapshot of deploy %s has no health path", d.ID.String())
+	}
+	return d.ImageDigest.String, plan, nil
 }
 
 func (p *Pipeline) healthTimeout() time.Duration {
@@ -126,7 +149,7 @@ func (p *Pipeline) healthTimeout() time.Duration {
 func (p *Pipeline) startInstance(ctx context.Context, appID, deployID, instanceID, image string, log *slog.Logger) (runtime.Instance, error) {
 	started, err := p.Engine.Start(ctx, runtime.Spec{AppID: appID, DeployID: deployID, InstanceID: instanceID, Image: image})
 	if err != nil {
-		return runtime.Instance{}, err
+		return started, err // an *runtime.ExitedError still carries the container id
 	}
 	var insID pgtype.UUID
 	if err := insID.Scan(instanceID); err != nil {

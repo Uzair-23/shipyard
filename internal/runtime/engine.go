@@ -91,6 +91,11 @@ func (e *Engine) Start(ctx context.Context, spec Spec) (Instance, error) {
 		}
 	}
 	if port == 0 {
+		if st := ins.Container.State; st != nil && !st.Running {
+			// The app exited before its port could be read (it crashed at once). That is the
+			// app's fault, like failing the health check; the container is kept for its logs.
+			return Instance{ContainerID: id}, &ExitedError{ExitCode: st.ExitCode, OOMKilled: st.OOMKilled}
+		}
 		return Instance{}, fmt.Errorf("container %s has no loopback port for %s", id, appPort)
 	}
 	return Instance{ContainerID: id, HostPort: port}, nil
