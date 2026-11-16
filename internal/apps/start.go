@@ -101,7 +101,7 @@ func (p *Pipeline) startInstance(ctx context.Context, appID, deployID, instanceI
 		return fmt.Errorf("record instance container: %w", err)
 	}
 	log.Info("container started", "instance_id", instanceID, "container_id", shortID(started.ContainerID),
-		"host_port", started.HostPort, "runtime", ociRuntimeName(p.Engine.OCIRuntime))
+		"host_port", started.HostPort, "runtime", p.Engine.RuntimeName())
 	return nil
 }
 
@@ -110,11 +110,4 @@ func shortID(id string) string {
 		return id[:12]
 	}
 	return id
-}
-
-func ociRuntimeName(r string) string {
-	if r == "" {
-		return "runc"
-	}
-	return r
 }

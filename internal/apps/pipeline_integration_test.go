@@ -270,7 +270,9 @@ func TestBuildViaWorker(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	w := &jobs.Worker{Pool: testPool, Handlers: f.pipeline.Handlers(), ID: "test-worker", PollInterval: 200 * time.Millisecond}
+	// Build handler only: with the start handler the deploy would move on to
+	// "starting" before the test sees "built".
+	w := &jobs.Worker{Pool: testPool, Handlers: map[string]jobs.Handler{KindBuild: f.pipeline.Build}, ID: "test-worker", PollInterval: 200 * time.Millisecond}
 	go func() { done <- w.Run(ctx) }()
 	defer func() {
 		cancel()

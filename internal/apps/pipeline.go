@@ -50,11 +50,19 @@ func SourceRelPath(appID pgtype.UUID, sourceRef string) (string, error) {
 	return filepath.Join("sources", appID.String(), m[1]+".tar.gz"), nil
 }
 
+// containerEngine is the part of *runtime.Engine the pipeline uses; tests
+// wrap the real engine to inject failures.
+type containerEngine interface {
+	Start(ctx context.Context, spec runtime.Spec) (runtime.Instance, error)
+	Remove(ctx context.Context, instanceID string) error
+	RuntimeName() string
+}
+
 // Pipeline runs the deploy job handlers.
 type Pipeline struct {
 	Pool    *pgxpool.Pool
 	Builder *build.Builder
-	Engine  *runtime.Engine
+	Engine  containerEngine // normally *runtime.Engine
 	DataDir string
 }
 

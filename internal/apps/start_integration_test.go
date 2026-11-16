@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -328,12 +329,24 @@ func TestStartRecreatesDriftedContainer(t *testing.T) {
 	}
 }
 
+// failAfterStart really creates and starts the container, then reports a
+// failure, as if inspecting or recording it had failed.
+type failAfterStart struct{ *runtime.Engine }
+
+func (e failAfterStart) Start(ctx context.Context, spec runtime.Spec) (runtime.Instance, error) {
+	if _, err := e.Engine.Start(ctx, spec); err != nil {
+		return runtime.Instance{}, err
+	}
+	return runtime.Instance{}, errors.New("injected failure after the container started")
+}
+
 // On the final attempt a start that fails after the container exists removes
-// the container and fails the deploy with a generic message.
+// the container and fails the deploy with a generic message. (A container
+// that merely exits is a health-check failure, not a start failure.)
 func TestStartFinalFailureRemovesContainer(t *testing.T) {
 	f := newFixture(t, "start-fails")
-	digest := buildCustom(t, f, "exits", "FROM busybox\nLABEL shipyard.app_id="+f.appID.String()+"\nUSER 10001:10001\nCMD [\"false\"]\n")
-	id := builtDeployWithImage(t, f, 1, digest)
+	f.pipeline.Engine = failAfterStart{f.pipeline.Engine.(*runtime.Engine)}
+	id := builtDeploy(t, f, map[string]string{"index.html": "x"})
 	job := startJob(id)
 	job.Attempts, job.MaxAttempts = 2, 3 // last attempt
 	if err := f.pipeline.Start(context.Background(), job); err == nil {

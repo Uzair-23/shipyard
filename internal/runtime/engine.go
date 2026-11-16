@@ -33,6 +33,14 @@ func NewEngine(ctx context.Context, docker *client.Client) (*Engine, error) {
 	return e, nil
 }
 
+// RuntimeName is the OCI runtime app containers use ("runsc" or "runc").
+func (e *Engine) RuntimeName() string {
+	if e.OCIRuntime == "" {
+		return "runc"
+	}
+	return e.OCIRuntime
+}
+
 // Instance is a started app container.
 type Instance struct {
 	ContainerID string
