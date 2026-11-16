@@ -1,7 +1,7 @@
 SHIPYARD_DATABASE_URL ?= postgres://shipyard:shipyard-dev@localhost:5434/shipyard?sslmode=disable
 export SHIPYARD_DATABASE_URL
 
-.PHONY: dev build test test-integration test-security lint fmt migrate sqlc worker
+.PHONY: dev build test test-integration test-security lint fmt migrate sqlc worker router
 
 dev:
 	docker compose up -d --build
@@ -34,6 +34,10 @@ migrate:
 # M1: the worker runs on the host (ADR 011); it moves into compose in M2.
 worker:
 	go run ./cmd/shipyard worker
+
+# ADR 014: the router also runs on the host; Caddy forwards *.apps.localhost to it.
+router:
+	go run ./cmd/shipyard router
 
 sqlc:
 	sqlc generate

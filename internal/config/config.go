@@ -11,6 +11,7 @@ type Config struct {
 	AppsDomain  string // apps host suffix, e.g. apps.localhost
 	DataDir     string // uploaded sources live under DataDir/sources
 	Registry    string // image registry host:port the Docker engine pushes to
+	RouterAddr  string // address the router listens on (the host, ADR 014)
 }
 
 // Load reads configuration using getenv (usually os.Getenv) and fails fast
@@ -23,6 +24,7 @@ func Load(getenv func(string) string) (Config, error) {
 		AppsDomain:  orDefault(getenv("SHIPYARD_APPS_DOMAIN"), "apps.localhost"),
 		DataDir:     orDefault(getenv("SHIPYARD_DATA_DIR"), "data"),
 		Registry:    orDefault(getenv("SHIPYARD_REGISTRY"), "localhost:5000"),
+		RouterAddr:  orDefault(getenv("SHIPYARD_ROUTER_ADDR"), "127.0.0.1:8081"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("SHIPYARD_DATABASE_URL is required")

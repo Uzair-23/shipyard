@@ -21,6 +21,7 @@ import (
 	"github.com/Uzair-23/shipyard/internal/build"
 	"github.com/Uzair-23/shipyard/internal/config"
 	"github.com/Uzair-23/shipyard/internal/jobs"
+	"github.com/Uzair-23/shipyard/internal/router"
 	"github.com/Uzair-23/shipyard/internal/runtime"
 	"github.com/Uzair-23/shipyard/internal/store"
 )
@@ -49,8 +50,7 @@ func run(args []string) error {
 	case "worker":
 		return runWorker(ctx)
 	case "router":
-		slog.Info("starting", "role", role)
-		return nil
+		return runRouter(ctx)
 	default:
 		return fmt.Errorf("unknown role %q: %s", role, usage)
 	}
@@ -129,6 +129,19 @@ func runWorker(ctx context.Context) error {
 		Handlers:    pipeline.Handlers(),
 	}
 	return w.Run(ctx)
+}
+
+func runRouter(ctx context.Context) error {
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
+	defer pool.Close()
+	return router.New(pool, cfg.AppsDomain, cfg.RouterAddr).Run(ctx)
 }
 
 func runMigrate(ctx context.Context) error {
