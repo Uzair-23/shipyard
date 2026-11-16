@@ -475,6 +475,15 @@ func TestAppLifecycleThroughAPI(t *testing.T) {
 		t.Fatalf("live app via router = %d %q", got.status, got.body)
 	}
 
+	// The build log of that deploy: build output, then the platform's own lines, then the end.
+	code, logBody := s.api(t, s.cookie, http.MethodGet, "/api/v1/apps/"+slug+"/deploys/1/logs", nil)
+	log := string(logBody)
+	started, step := strings.Index(log, "Build started"), strings.Index(log, `"stream":"build"`)
+	finished, live, end := strings.Index(log, "Build finished"), strings.Index(log, "Deploy is live"), strings.Index(log, "event: end")
+	if code != http.StatusOK || started < 0 || step < started || finished < step || live < finished || end < live || !strings.Contains(log, `{"state":"live"}`) {
+		t.Fatalf("build log stream (%d) is incomplete or out of order:\n%s", code, log)
+	}
+
 	other := s.signup(t, fmt.Sprintf("other-%d@example.com", time.Now().UnixNano()))
 	for _, action := range []string{"stop", "start", "restart"} {
 		if code, _ := s.api(t, other, http.MethodPost, "/api/v1/apps/"+slug+"/"+action, nil); code != http.StatusNotFound {

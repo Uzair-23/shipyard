@@ -49,6 +49,9 @@ func (p *Pipeline) Start(ctx context.Context, job store.Job) error {
 		} else if n == 0 {
 			return nil
 		}
+		if err := logSystem(ctx, p.Pool, id, "Starting the app"); err != nil {
+			log.Warn("could not write to the deploy log", "error", err)
+		}
 	case "starting", "health_check":
 		// retry: carry on with the same instance
 	case "live":
@@ -199,6 +202,9 @@ func (p *Pipeline) promote(ctx context.Context, appID, deployID, instanceID pgty
 			return nil
 		}
 		live = true
+		if err := logSystem(ctx, tx, deployID, "Deploy is live"); err != nil {
+			return err
+		}
 		if err := q.SetInstanceState(ctx, store.SetInstanceStateParams{State: "running", ID: instanceID}); err != nil {
 			return fmt.Errorf("mark instance running: %w", err)
 		}

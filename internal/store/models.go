@@ -91,6 +91,15 @@ type Job struct {
 	FinishedAt  pgtype.Timestamptz
 }
 
+type LogLine struct {
+	ID       int64
+	AppID    pgtype.UUID
+	DeployID pgtype.UUID
+	Stream   string
+	Line     string
+	Ts       pgtype.Timestamptz
+}
+
 type Session struct {
 	TokenHash []byte
 	UserID    pgtype.UUID

@@ -114,6 +114,7 @@ func (a *Apps) mount(r chi.Router) {
 			g.Post("/apps/{slug}/stop", a.lifecycle(apps.KindStop, "stopped"))
 			g.Post("/apps/{slug}/restart", a.lifecycle(apps.KindRestart, "running"))
 			g.Post("/apps/{slug}/deploys", a.createDeploy)
+			g.Get("/apps/{slug}/deploys/{seq}/logs", a.deployLogs)
 		})
 	})
 }

@@ -125,7 +125,11 @@ func (p *Pipeline) Build(ctx context.Context, job store.Job) error {
 		return nil // state changed since we loaded it
 	}
 
-	digest, plan, err := p.build(ctx, d)
+	sink := newLogSink(p.Pool, id)
+	stopLogs := sink.Start(ctx)
+	sink.Add("system", "Build started")
+	digest, plan, err := p.build(ctx, d, sink.Build)
+	stopLogs() // everything the build printed is stored before any state change
 	var be *build.BuildError
 	switch {
 	case err == nil:
@@ -163,6 +167,9 @@ func (p *Pipeline) Build(ctx context.Context, job store.Job) error {
 		if n == 0 {
 			return nil // state changed meanwhile (e.g. deleted); do not start it
 		}
+		if err := logSystem(ctx, tx, id, "Build finished"); err != nil {
+			return err
+		}
 		_, err = jobs.Enqueue(ctx, tx, store.EnqueueJobParams{
 			Kind: KindStart, AppID: d.AppID, Payload: payload, MaxAttempts: 3,
 		})
@@ -175,7 +182,7 @@ func (p *Pipeline) Build(ctx context.Context, job store.Job) error {
 	return nil
 }
 
-func (p *Pipeline) build(ctx context.Context, d store.GetDeployForBuildRow) (string, build.Plan, error) {
+func (p *Pipeline) build(ctx context.Context, d store.GetDeployForBuildRow, onLine func(string)) (string, build.Plan, error) {
 	rel, err := SourceRelPath(d.AppID, d.SourceRef)
 	if err != nil {
 		return "", build.Plan{}, err
@@ -219,7 +226,7 @@ func (p *Pipeline) build(ctx context.Context, d store.GetDeployForBuildRow) (str
 	go func() { pw.CloseWithError(build.WriteContext(pw, f, plan.Dockerfile)) }()
 	defer func() { _ = pr.Close() }()
 
-	digest, err := p.Builder.Build(ctx, pr, d.AppID.String(), strconv.Itoa(int(d.Seq)))
+	digest, err := p.Builder.BuildLogged(ctx, pr, d.AppID.String(), strconv.Itoa(int(d.Seq)), onLine)
 	return digest, plan, err
 }
 
@@ -227,14 +234,24 @@ func (p *Pipeline) build(ctx context.Context, d store.GetDeployForBuildRow) (str
 // may contain build output); if storing it still fails, a fixed message is
 // stored so the deploy never stays stuck in "building".
 func (p *Pipeline) failDeploy(ctx context.Context, id pgtype.UUID, msg string) error {
-	q := store.New(p.Pool)
 	wctx := context.WithoutCancel(ctx)
-	_, err := q.FailDeploy(wctx, store.FailDeployParams{Error: build.Sanitize(msg), ID: id})
+	fail := func(text string) error {
+		return pgx.BeginFunc(wctx, p.Pool, func(tx pgx.Tx) error {
+			n, err := store.New(tx).FailDeploy(wctx, store.FailDeployParams{Error: build.Sanitize(text), ID: id})
+			if err != nil || n == 0 {
+				return err
+			}
+			// The reason goes into the log in the same transaction as the state change, so a
+			// client following the log sees it before it sees the deploy has ended.
+			return logSystem(wctx, tx, id, firstLine(build.Sanitize(text)))
+		})
+	}
+	err := fail(msg)
 	if err == nil {
 		return nil
 	}
 	slog.Error("record deploy failure; storing a generic message", "deploy_id", id.String(), "error", err)
-	if _, err := q.FailDeploy(wctx, store.FailDeployParams{Error: "build failed; the build output could not be stored", ID: id}); err != nil {
+	if err := fail("build failed; the build output could not be stored"); err != nil {
 		return fmt.Errorf("mark deploy failed: %w", err)
 	}
 	return nil

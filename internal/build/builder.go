@@ -82,6 +82,12 @@ var runFailureRE = regexp.MustCompile(`returned a non-zero code: (\d+)$`)
 // (repository@sha256:...). A *BuildError means the source is at fault; any
 // other error is a platform problem whose details must not reach the user.
 func (b *Builder) Build(ctx context.Context, buildContext io.Reader, appID, tag string) (digestRef string, err error) {
+	return b.BuildLogged(ctx, buildContext, appID, tag, nil)
+}
+
+// BuildLogged is Build that also passes the build output to onLine, one
+// sanitised line at a time (nil to ignore it).
+func (b *Builder) BuildLogged(ctx context.Context, buildContext io.Reader, appID, tag string, onLine func(string)) (digestRef string, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.defaults()
@@ -112,6 +118,11 @@ func (b *Builder) Build(ctx context.Context, buildContext io.Reader, appID, tag 
 	defer func() { _ = res.Body.Close() }()
 
 	out := &tailBuffer{max: 16 << 10}
+	lines := &lineSplitter{emit: func(string) {}}
+	if onLine != nil {
+		lines.emit = onLine
+	}
+	defer lines.Close()
 	total := 0
 	dec := json.NewDecoder(res.Body)
 	for {
@@ -143,6 +154,7 @@ func (b *Builder) Build(ctx context.Context, buildContext io.Reader, appID, tag 
 		}
 		if m.Stream != "" {
 			out.WriteString(m.Stream)
+			lines.Write(m.Stream)
 		}
 	}
 	if bctx.Err() != nil {

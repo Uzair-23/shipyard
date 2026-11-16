@@ -192,3 +192,40 @@ func TestDaemonErrorIsNotUserError(t *testing.T) {
 		t.Fatalf("got %v, want a platform (non-BuildError) error", err)
 	}
 }
+
+// BuildLogged passes the build output on line by line, in order, including the
+// output of a failing step, and sanitised.
+func TestBuildLoggedStreamsOutputLines(t *testing.T) {
+	var lines []string
+	df := "FROM busybox\nRUN echo first-marker && echo second-marker && echo ansi-\x1b[31mred\x1b[0m\n"
+	_, err := newBuilder(t).BuildLogged(context.Background(), buildContext(t, df), testAppID, "logged", func(l string) { lines = append(lines, l) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := indexOf(lines, "first-marker"), indexOf(lines, "second-marker")
+	if first < 0 || second < first {
+		t.Fatalf("output lines missing or out of order: %q", lines)
+	}
+	for _, l := range lines {
+		if strings.ContainsRune(l, 0x1b) || strings.ContainsRune(l, '\n') {
+			t.Fatalf("unsanitised line %q", l)
+		}
+	}
+
+	lines = nil
+	_, err = newBuilder(t).BuildLogged(context.Background(), buildContext(t, "FROM busybox\nRUN echo about-to-fail && exit 3\n"), testAppID, "logged-fail",
+		func(l string) { lines = append(lines, l) })
+	var be *BuildError
+	if !errors.As(err, &be) || indexOf(lines, "about-to-fail") < 0 {
+		t.Fatalf("failing build: err=%v lines=%q", err, lines)
+	}
+}
+
+func indexOf(lines []string, sub string) int {
+	for i, l := range lines {
+		if strings.Contains(l, sub) {
+			return i
+		}
+	}
+	return -1
+}
