@@ -175,7 +175,14 @@ func (p *Pipeline) promote(ctx context.Context, appID, deployID, instanceID pgty
 		if err := q.SetInstanceState(ctx, store.SetInstanceStateParams{State: "running", ID: instanceID}); err != nil {
 			return fmt.Errorf("mark instance running: %w", err)
 		}
-		return q.SetAppLive(ctx, store.SetAppLiveParams{DeployID: deployID, ID: appID})
+		if err := q.SetAppLive(ctx, store.SetAppLiveParams{DeployID: deployID, ID: appID}); err != nil {
+			return fmt.Errorf("set app live: %w", err)
+		}
+		// Delivered on commit: routers reload this app's route.
+		if err := q.NotifyRouteChange(ctx, appID); err != nil {
+			return fmt.Errorf("notify route change: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
