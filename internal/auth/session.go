@@ -123,3 +123,21 @@ func TokenFromRequest(r *http.Request) string {
 	}
 	return ""
 }
+
+// SafeReturnPath returns p if it is a plain path (and query) on the same host,
+// otherwise "/". It is the only form of "return to" we accept, so a handoff
+// cannot be turned into an open redirect ("//evil.example", "/\evil", "https://...").
+func SafeReturnPath(p string) string {
+	if p == "" || len(p) > 2000 || p[0] != '/' {
+		return "/"
+	}
+	if len(p) > 1 && (p[1] == '/' || p[1] == '\x5c') {
+		return "/"
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f || r == '\x5c' {
+			return "/"
+		}
+	}
+	return p
+}

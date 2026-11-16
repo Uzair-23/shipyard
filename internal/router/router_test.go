@@ -80,11 +80,17 @@ func upstream(t *testing.T) (port int, seen chan *http.Request) {
 	return p, seen
 }
 
+// newTestHandler builds a handler without access control; routes default to public.
 func newTestHandler(routes ...Route) (*handler, *activity) {
+	for i := range routes {
+		if routes[i].Visibility == "" {
+			routes[i].Visibility = "public"
+		}
+	}
 	tb := NewTable()
 	tb.Replace(routes)
 	act := newActivity()
-	return newHandler(tb, "apps.localhost", act), act
+	return newHandler(tb, "apps.localhost", act, nil), act
 }
 
 func do(h http.Handler, host, path string, hdr http.Header) *httptest.ResponseRecorder {

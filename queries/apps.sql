@@ -19,7 +19,7 @@ ORDER BY created_at DESC
 LIMIT 200;
 
 -- name: GetOwnedApp :one
-SELECT a.id, a.slug, a.status, a.desired_state, a.idle_timeout_s, a.created_at,
+SELECT a.id, a.slug, a.status, a.desired_state, a.visibility, a.idle_timeout_s, a.created_at,
        cd.seq AS current_seq, cd.state AS current_state, cd.finished_at AS current_finished_at,
        coalesce(ld.seq, 0)::int AS latest_seq, coalesce(ld.state, '')::text AS latest_state, ld.error AS latest_error,
        ld.created_at AS latest_created_at, ld.finished_at AS latest_finished_at

@@ -12,7 +12,7 @@ import (
 )
 
 const getRoute = `-- name: GetRoute :one
-SELECT a.id AS app_id, a.slug, a.status, coalesce(i.host_port, 0)::int AS host_port
+SELECT a.id AS app_id, a.slug, a.status, a.visibility, coalesce(i.host_port, 0)::int AS host_port
 FROM apps a
 LEFT JOIN LATERAL (
     SELECT host_port FROM instances
@@ -24,10 +24,11 @@ WHERE a.id = $1 AND a.deleted_at IS NULL
 `
 
 type GetRouteRow struct {
-	AppID    pgtype.UUID
-	Slug     string
-	Status   string
-	HostPort int32
+	AppID      pgtype.UUID
+	Slug       string
+	Status     string
+	Visibility string
+	HostPort   int32
 }
 
 func (q *Queries) GetRoute(ctx context.Context, id pgtype.UUID) (GetRouteRow, error) {
@@ -37,13 +38,14 @@ func (q *Queries) GetRoute(ctx context.Context, id pgtype.UUID) (GetRouteRow, er
 		&i.AppID,
 		&i.Slug,
 		&i.Status,
+		&i.Visibility,
 		&i.HostPort,
 	)
 	return i, err
 }
 
 const listRoutes = `-- name: ListRoutes :many
-SELECT a.id AS app_id, a.slug, a.status, coalesce(i.host_port, 0)::int AS host_port
+SELECT a.id AS app_id, a.slug, a.status, a.visibility, coalesce(i.host_port, 0)::int AS host_port
 FROM apps a
 LEFT JOIN LATERAL (
     SELECT host_port FROM instances
@@ -55,10 +57,11 @@ WHERE a.deleted_at IS NULL
 `
 
 type ListRoutesRow struct {
-	AppID    pgtype.UUID
-	Slug     string
-	Status   string
-	HostPort int32
+	AppID      pgtype.UUID
+	Slug       string
+	Status     string
+	Visibility string
+	HostPort   int32
 }
 
 // One row per live app: the loopback port of the running instance of its
@@ -76,6 +79,7 @@ func (q *Queries) ListRoutes(ctx context.Context) ([]ListRoutesRow, error) {
 			&i.AppID,
 			&i.Slug,
 			&i.Status,
+			&i.Visibility,
 			&i.HostPort,
 		); err != nil {
 			return nil, err

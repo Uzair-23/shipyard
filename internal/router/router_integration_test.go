@@ -4,6 +4,7 @@ package router
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,7 +59,7 @@ func seedApp(t *testing.T, slug string, port int) string {
 	t.Helper()
 	ctx := context.Background()
 	var appID string
-	if err := testPool.QueryRow(ctx, `INSERT INTO apps (slug, status) VALUES ($1, 'running') RETURNING id::text`, slug).Scan(&appID); err != nil {
+	if err := testPool.QueryRow(ctx, `INSERT INTO apps (slug, status, visibility) VALUES ($1, 'running', 'public') RETURNING id::text`, slug).Scan(&appID); err != nil {
 		t.Fatal(err)
 	}
 	var deployID string
@@ -186,4 +189,136 @@ func TestLastRequestAtIsFlushed(t *testing.T) {
 		err := testPool.QueryRow(context.Background(), `SELECT last_request_at IS NOT NULL FROM apps WHERE id = $1`, appID).Scan(&set)
 		return err == nil && set
 	})
+}
+
+func seedUser(t *testing.T, email string) string {
+	t.Helper()
+	var id string
+	if err := testPool.QueryRow(context.Background(), `INSERT INTO users (email) VALUES ($1) RETURNING id::text`, email).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func seedPrivateApp(t *testing.T, owner string) string {
+	t.Helper()
+	var id string
+	if err := testPool.QueryRow(context.Background(),
+		`INSERT INTO apps (slug, owner_id, visibility) VALUES ($1, $2, 'private') RETURNING id::text`, uniq("priv"), owner).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func insertCode(t *testing.T, code, appID, userID, returnPath string, expires time.Time) {
+	t.Helper()
+	h := sha256.Sum256([]byte(code))
+	if _, err := testPool.Exec(context.Background(),
+		`INSERT INTO handoff_codes (code_hash, app_id, user_id, return_path, expires_at) VALUES ($1, $2, $3, $4, $5)`,
+		h[:], appID, userID, returnPath, expires); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHandoffCodeIsSingleUseAndBoundToItsApp(t *testing.T) {
+	ctx := context.Background()
+	be := newDBBackend(testPool, 0)
+	user := seedUser(t, uniq("hand")+"@example.com")
+	appA, appB := seedPrivateApp(t, user), seedPrivateApp(t, user)
+
+	// Valid code: returns the user, email and stored return path, once.
+	insertCode(t, "code-ok", appA, user, "/docs", time.Now().Add(time.Minute))
+	uid, email, ret, ok, err := be.ConsumeHandoff(ctx, appA, "code-ok")
+	if err != nil || !ok || uid != user || ret != "/docs" || !strings.HasSuffix(email, "@example.com") {
+		t.Fatalf("first use: %q %q %q %v %v", uid, email, ret, ok, err)
+	}
+	if _, _, _, ok, _ := be.ConsumeHandoff(ctx, appA, "code-ok"); ok {
+		t.Fatal("a code was accepted twice")
+	}
+
+	// Another app's host cannot use it, and the attempt does not burn it.
+	insertCode(t, "code-a", appA, user, "/", time.Now().Add(time.Minute))
+	if _, _, _, ok, _ := be.ConsumeHandoff(ctx, appB, "code-a"); ok {
+		t.Fatal("a code for app A was accepted for app B")
+	}
+	if _, _, _, ok, _ := be.ConsumeHandoff(ctx, appA, "code-a"); !ok {
+		t.Fatal("the wrong-app attempt used the code up")
+	}
+
+	// Expired, unknown and suspended-user codes.
+	insertCode(t, "code-old", appA, user, "/", time.Now().Add(-time.Second))
+	if _, _, _, ok, _ := be.ConsumeHandoff(ctx, appA, "code-old"); ok {
+		t.Error("an expired code was accepted")
+	}
+	if _, _, _, ok, _ := be.ConsumeHandoff(ctx, appA, "never-issued"); ok {
+		t.Error("an unknown code was accepted")
+	}
+	suspended := seedUser(t, uniq("susp")+"@example.com")
+	if _, err := testPool.Exec(ctx, `UPDATE users SET suspended_at = now() WHERE id = $1`, suspended); err != nil {
+		t.Fatal(err)
+	}
+	insertCode(t, "code-susp", appA, suspended, "/", time.Now().Add(time.Minute))
+	if _, _, _, ok, _ := be.ConsumeHandoff(ctx, appA, "code-susp"); ok {
+		t.Error("a suspended user's code was accepted")
+	}
+}
+
+func TestHandoffCodeConsumedByExactlyOneOfManyRacers(t *testing.T) {
+	be := newDBBackend(testPool, 0)
+	user := seedUser(t, uniq("race")+"@example.com")
+	app := seedPrivateApp(t, user)
+	insertCode(t, "race-code", app, user, "/", time.Now().Add(time.Minute))
+
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, _, ok, err := be.ConsumeHandoff(context.Background(), app, "race-code"); err == nil && ok {
+				wins.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins.Load() != 1 {
+		t.Fatalf("%d of 20 concurrent requests consumed the same code, want exactly 1", wins.Load())
+	}
+}
+
+func TestAccessDecisionsFollowMembershipAfterTheCacheExpires(t *testing.T) {
+	ctx := context.Background()
+	be := newDBBackend(testPool, 300*time.Millisecond)
+	owner := seedUser(t, uniq("own")+"@example.com")
+	guest := uniq("guest") + "@example.com"
+	guestID := seedUser(t, guest)
+	app := seedPrivateApp(t, owner)
+
+	can := func(user, email string) bool {
+		ok, err := be.CanView(ctx, app, user, email)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if !can(owner, "x@example.com") {
+		t.Error("the owner cannot view their own app")
+	}
+	if can(guestID, guest) {
+		t.Error("a stranger can view a private app")
+	}
+	if _, err := testPool.Exec(ctx, `INSERT INTO app_members (app_id, email) VALUES ($1, upper($2))`, app, guest); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "membership to take effect after the cache TTL", func() bool { return can(guestID, guest) })
+
+	if _, err := testPool.Exec(ctx, `DELETE FROM app_members WHERE app_id = $1`, app); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "removal to take effect after the cache TTL", func() bool { return !can(guestID, guest) })
+
+	if _, err := testPool.Exec(ctx, `UPDATE apps SET visibility = 'public' WHERE id = $1`, app); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "public visibility to open the app", func() bool { return can(guestID, guest) })
 }

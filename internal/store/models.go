@@ -20,6 +20,13 @@ type App struct {
 	LastRequestAt   pgtype.Timestamptz
 	DeletedAt       pgtype.Timestamptz
 	CreatedAt       pgtype.Timestamptz
+	Visibility      string
+}
+
+type AppMember struct {
+	AppID     pgtype.UUID
+	Email     string
+	CreatedAt pgtype.Timestamptz
 }
 
 type Deploy struct {
@@ -34,6 +41,15 @@ type Deploy struct {
 	CreatedBy      pgtype.UUID
 	CreatedAt      pgtype.Timestamptz
 	FinishedAt     pgtype.Timestamptz
+}
+
+type HandoffCode struct {
+	CodeHash   []byte
+	AppID      pgtype.UUID
+	UserID     pgtype.UUID
+	ReturnPath string
+	ExpiresAt  pgtype.Timestamptz
+	UsedAt     pgtype.Timestamptz
 }
 
 type Instance struct {

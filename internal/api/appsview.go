@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +46,7 @@ type appView struct {
 	Slug          string      `json:"slug"`
 	Status        string      `json:"status"`
 	URL           string      `json:"url"`
+	Visibility    string      `json:"visibility"` // "private" (owner and members) or "public"
 	IdleTimeoutS  int32       `json:"idle_timeout_s"`
 	CurrentDeploy *deployView `json:"current_deploy"` // the deploy being served, if any
 	LatestDeploy  *deployView `json:"latest_deploy"`  // the newest deploy, whatever its state (building, failed, ...)
@@ -63,7 +65,7 @@ func (a *Apps) appURL(slug string) string { return fmt.Sprintf("http://%s.%s", s
 
 func (a *Apps) viewOf(row store.GetOwnedAppRow) appView {
 	v := appView{
-		Slug: row.Slug, Status: row.Status, URL: a.appURL(row.Slug), IdleTimeoutS: row.IdleTimeoutS,
+		Slug: row.Slug, Status: row.Status, URL: a.appURL(row.Slug), Visibility: row.Visibility, IdleTimeoutS: row.IdleTimeoutS,
 		CreatedAt: row.CreatedAt.Time.UTC(),
 	}
 	if row.CurrentSeq.Valid {
@@ -127,33 +129,41 @@ const (
 
 func (a *Apps) patchApp(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		IdleTimeoutS *int32 `json:"idle_timeout_s"`
+		IdleTimeoutS *int32  `json:"idle_timeout_s"`
+		Visibility   *string `json:"visibility"`
 	}
-	if !decodeJSON(w, r, &req, `{"idle_timeout_s":600}`) {
+	if !decodeJSON(w, r, &req, `{"visibility":"public","idle_timeout_s":600}`) {
 		return
 	}
-	if req.IdleTimeoutS == nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "nothing to change: send idle_timeout_s")
+	if req.IdleTimeoutS == nil && req.Visibility == nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "nothing to change: send idle_timeout_s or visibility")
 		return
 	}
-	if *req.IdleTimeoutS < minIdleTimeoutS || *req.IdleTimeoutS > maxIdleTimeoutS {
+	if req.IdleTimeoutS != nil && (*req.IdleTimeoutS < minIdleTimeoutS || *req.IdleTimeoutS > maxIdleTimeoutS) {
 		writeError(w, http.StatusBadRequest, "invalid_idle_timeout", "idle_timeout_s must be between 300 and 3600 seconds")
 		return
 	}
-	user, _ := userFrom(r.Context())
+	if req.Visibility != nil && *req.Visibility != "private" && *req.Visibility != "public" {
+		writeError(w, http.StatusBadRequest, "invalid_visibility", `visibility must be "private" or "public"`)
+		return
+	}
 	slug := chi.URLParam(r, "slug")
-	q := store.New(a.Pool)
-	id, err := q.GetOwnedAppID(r.Context(), store.GetOwnedAppIDParams{Slug: slug, OwnerID: user.ID})
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "not_found", "app not found")
-		return
-	}
-	if err != nil {
-		internalError(w, "load app", err)
-		return
-	}
-	if err := q.SetIdleTimeout(r.Context(), store.SetIdleTimeoutParams{IdleTimeoutS: *req.IdleTimeoutS, ID: id}); err != nil {
-		internalError(w, "set idle timeout", err)
+	err := a.inOwnedAppTx(r, slug, func(ctx context.Context, tx pgx.Tx, app store.LockOwnedAppRow) error {
+		q := store.New(tx)
+		if req.IdleTimeoutS != nil {
+			if err := q.SetIdleTimeout(ctx, store.SetIdleTimeoutParams{IdleTimeoutS: *req.IdleTimeoutS, ID: app.ID}); err != nil {
+				return fmt.Errorf("set idle timeout: %w", err)
+			}
+		}
+		if req.Visibility != nil {
+			if err := q.SetVisibility(ctx, store.SetVisibilityParams{Visibility: *req.Visibility, ID: app.ID}); err != nil {
+				return fmt.Errorf("set visibility: %w", err)
+			}
+			return q.NotifyRouteChange(ctx, app.ID) // routers reload the app's visibility
+		}
+		return nil
+	})
+	if a.lifecycleFailed(w, err) {
 		return
 	}
 	a.writeApp(w, r, http.StatusOK, slug)

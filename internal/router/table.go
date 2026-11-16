@@ -10,7 +10,9 @@ type Route struct {
 	AppID  string
 	Slug   string
 	Status string
-	Port   int
+	// Visibility is "private" or "public". Anything else is treated as private.
+	Visibility string
+	Port       int
 }
 
 // Table is the in-memory route table, safe for concurrent use.

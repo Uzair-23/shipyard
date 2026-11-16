@@ -57,6 +57,7 @@ func TestSampleApps(t *testing.T) {
 	}{
 		{"hello-python", Python, "flask --app app run"},
 		{"hello-node", Node, "npm start"},
+		{"whoami", Node, "npm start"},
 		{"static-site", Static, ""},
 	}
 	for _, tt := range tests {

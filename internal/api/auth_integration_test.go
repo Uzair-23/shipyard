@@ -223,7 +223,7 @@ func TestPatchIdleTimeout(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"idle_timeout_s":1800`) {
 		t.Fatalf("patch: %d %s", rec.Code, rec.Body)
 	}
-	for _, bad := range []any{map[string]int{"idle_timeout_s": 299}, map[string]int{"idle_timeout_s": 3601}, map[string]string{}, map[string]string{"visibility": "public"}} {
+	for _, bad := range []any{map[string]int{"idle_timeout_s": 299}, map[string]int{"idle_timeout_s": 3601}, map[string]string{}, map[string]string{"unknown_field": "x"}} {
 		if rec := e.call(t, e.cookie, http.MethodPatch, "/api/v1/apps/patch-app", bad); rec.Code != http.StatusBadRequest {
 			t.Errorf("patch %v: %d, want 400", bad, rec.Code)
 		}

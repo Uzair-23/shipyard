@@ -23,6 +23,7 @@ import (
 	"github.com/Uzair-23/shipyard/internal/jobs"
 	"github.com/Uzair-23/shipyard/internal/router"
 	"github.com/Uzair-23/shipyard/internal/runtime"
+	"github.com/Uzair-23/shipyard/internal/secrets"
 	"github.com/Uzair-23/shipyard/internal/store"
 )
 
@@ -143,7 +144,14 @@ func runRouter(ctx context.Context) error {
 		return fmt.Errorf("connect to database: %w", err)
 	}
 	defer pool.Close()
-	return router.New(pool, cfg.AppsDomain, cfg.RouterAddr).Run(ctx)
+	master, err := secrets.LoadMasterKey(os.Getenv, cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("load master key: %w", err)
+	}
+	rt := router.New(pool, cfg.AppsDomain, cfg.RouterAddr)
+	rt.BaseDomain = cfg.BaseDomain
+	rt.CookieKey = secrets.Derive(master, "sy_app cookie")
+	return rt.Run(ctx)
 }
 
 func runMigrate(ctx context.Context) error {

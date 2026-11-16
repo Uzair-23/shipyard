@@ -22,6 +22,15 @@ type Router struct {
 	AppsDomain string // e.g. apps.localhost
 	Addr       string // listen address, e.g. 127.0.0.1:8081
 
+	// BaseDomain is the dashboard host (e.g. shipyard.localhost), where the auth handoff lives.
+	BaseDomain string
+	// CookieKey signs the _sy_app cookie. Without it the router refuses to serve private apps.
+	CookieKey []byte
+	// Backend overrides the database-backed access backend (tests).
+	Backend Backend
+	// AccessCacheTTL is how long an access decision is remembered; default 60 s.
+	AccessCacheTTL time.Duration
+
 	ReloadInterval time.Duration // full reload fallback; default 5s
 	FlushInterval  time.Duration // last_request_at flush; default 10s
 
@@ -35,7 +44,17 @@ func New(pool *pgxpool.Pool, appsDomain, addr string) *Router {
 }
 
 // Handler is the HTTP handler (exposed for tests).
-func (r *Router) Handler() http.Handler { return newHandler(r.table, r.AppsDomain, r.act) }
+func (r *Router) Handler() http.Handler {
+	var g *gate
+	if len(r.CookieKey) > 0 {
+		be := r.Backend
+		if be == nil {
+			be = newDBBackend(r.Pool, r.AccessCacheTTL)
+		}
+		g = &gate{backend: be, key: r.CookieKey, baseDomain: r.BaseDomain}
+	}
+	return newHandler(r.table, r.AppsDomain, r.act, g)
+}
 
 // Run listens on Addr and serves until ctx is cancelled.
 func (r *Router) Run(ctx context.Context) error {
@@ -89,7 +108,7 @@ func (r *Router) reloadAll(ctx context.Context) error {
 	}
 	routes := make([]Route, 0, len(rows))
 	for _, row := range rows {
-		routes = append(routes, Route{AppID: row.AppID.String(), Slug: row.Slug, Status: row.Status, Port: int(row.HostPort)})
+		routes = append(routes, Route{AppID: row.AppID.String(), Slug: row.Slug, Status: row.Status, Visibility: row.Visibility, Port: int(row.HostPort)})
 	}
 	r.table.Replace(routes)
 	return nil
@@ -104,7 +123,7 @@ func (r *Router) reloadApp(ctx context.Context, appID pgtype.UUID) error {
 	if err != nil {
 		return err
 	}
-	r.table.Set(Route{AppID: row.AppID.String(), Slug: row.Slug, Status: row.Status, Port: int(row.HostPort)})
+	r.table.Set(Route{AppID: row.AppID.String(), Slug: row.Slug, Status: row.Status, Visibility: row.Visibility, Port: int(row.HostPort)})
 	return nil
 }
 

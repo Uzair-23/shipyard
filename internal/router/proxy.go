@@ -16,18 +16,33 @@ import (
 const (
 	appCookie      = "_sy_app"
 	reservedPrefix = "/__shipyard/"
+	callbackPath   = "/__shipyard/callback"
 )
+
+// cleanHeaderValue is true for a non-empty value without control characters.
+func cleanHeaderValue(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
 
 // handler routes a request by Host to an app container.
 type handler struct {
 	table      *Table
 	appsDomain string
 	act        *activity
+	gate       *gate // nil: private apps are refused
 	proxy      *httputil.ReverseProxy
 }
 
-func newHandler(table *Table, appsDomain string, act *activity) *handler {
-	h := &handler{table: table, appsDomain: appsDomain, act: act}
+func newHandler(table *Table, appsDomain string, act *activity, g *gate) *handler {
+	h := &handler{table: table, appsDomain: appsDomain, act: act, gate: g}
 	h.proxy = &httputil.ReverseProxy{
 		Rewrite: h.rewrite,
 		Transport: &http.Transport{
@@ -61,14 +76,28 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writePage(w, http.StatusNotFound, "Not found", "This address is not served by Shipyard.")
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, reservedPrefix) {
-		// Reserved for the router (auth callback, wake-up readiness); never proxied.
-		http.NotFound(w, r)
-		return
-	}
 	route, ok := h.table.Lookup(slug)
 	if !ok {
 		writePage(w, http.StatusNotFound, "No app named "+slug, "There is no app at this address.")
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, reservedPrefix) {
+		// Reserved for the router; never proxied.
+		if r.URL.Path == callbackPath && h.gate != nil {
+			h.gate.callback(w, r, route)
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
+	var identity *Identity
+	if h.gate != nil {
+		var allowed bool
+		if identity, allowed = h.gate.authorize(w, r, route); !allowed {
+			return
+		}
+	} else if route.Visibility != "public" {
+		writePage(w, http.StatusServiceUnavailable, "Access check unavailable", "This router has no access control configured, so it only serves public apps.")
 		return
 	}
 	if route.Port == 0 {
@@ -77,11 +106,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.act.mark(route.AppID)
-	h.proxy.ServeHTTP(w, r.WithContext(withRoute(r.Context(), route)))
+	h.proxy.ServeHTTP(w, r.WithContext(withInfo(r.Context(), reqInfo{Route: route, Identity: identity})))
 }
 
 func (h *handler) rewrite(pr *httputil.ProxyRequest) {
-	route, _ := routeFrom(pr.In.Context())
+	info, _ := infoFrom(pr.In.Context())
+	route := info.Route
 	pr.Out.URL = &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(route.Port)),
 		Path: pr.In.URL.Path, RawPath: pr.In.URL.RawPath, RawQuery: pr.In.URL.RawQuery}
 	pr.Out.Host = pr.In.Host
@@ -94,6 +124,10 @@ func (h *handler) rewrite(pr *httputil.ProxyRequest) {
 		}
 	}
 	stripCookie(pr.Out, appCookie)
+	if id := info.Identity; id != nil && cleanHeaderValue(id.UserID) && cleanHeaderValue(id.Email) {
+		pr.Out.Header.Set("X-Shipyard-User-Id", id.UserID)
+		pr.Out.Header.Set("X-Shipyard-User-Email", id.Email)
+	}
 
 	// Keep the client chain Caddy built, then add our hop.
 	if xff := pr.In.Header.Values("X-Forwarded-For"); len(xff) > 0 {

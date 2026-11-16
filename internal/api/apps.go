@@ -87,6 +87,7 @@ func NewApps(pool *pgxpool.Pool, dataDir, baseDomain string) *Apps {
 }
 
 func (a *Apps) mount(r chi.Router) {
+	r.Get("/auth/app", a.authApp) // the auth handoff, on the dashboard host; Caddy routes /auth/* to the API
 	r.Route("/api/v1", func(v chi.Router) {
 		v.Use(a.sameOriginOnly) // the CSRF protection for every route, mutating or not
 		v.Post("/auth/signup", a.signup)
@@ -100,6 +101,9 @@ func (a *Apps) mount(r chi.Router) {
 			g.Get("/apps/{slug}", a.getApp)
 			g.Patch("/apps/{slug}", a.patchApp)
 			g.Delete("/apps/{slug}", a.deleteApp)
+			g.Get("/apps/{slug}/members", a.listMembers)
+			g.Post("/apps/{slug}/members", a.addMember)
+			g.Delete("/apps/{slug}/members/{email}", a.removeMember)
 			g.Post("/apps/{slug}/start", a.lifecycle(apps.KindLaunch, "running"))
 			g.Post("/apps/{slug}/stop", a.lifecycle(apps.KindStop, "stopped"))
 			g.Post("/apps/{slug}/restart", a.lifecycle(apps.KindRestart, "running"))

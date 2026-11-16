@@ -1,7 +1,7 @@
 -- name: ListRoutes :many
 -- One row per live app: the loopback port of the running instance of its
 -- current deploy (0 when nothing is running). The router's route table.
-SELECT a.id AS app_id, a.slug, a.status, coalesce(i.host_port, 0)::int AS host_port
+SELECT a.id AS app_id, a.slug, a.status, a.visibility, coalesce(i.host_port, 0)::int AS host_port
 FROM apps a
 LEFT JOIN LATERAL (
     SELECT host_port FROM instances
@@ -12,7 +12,7 @@ LEFT JOIN LATERAL (
 WHERE a.deleted_at IS NULL;
 
 -- name: GetRoute :one
-SELECT a.id AS app_id, a.slug, a.status, coalesce(i.host_port, 0)::int AS host_port
+SELECT a.id AS app_id, a.slug, a.status, a.visibility, coalesce(i.host_port, 0)::int AS host_port
 FROM apps a
 LEFT JOIN LATERAL (
     SELECT host_port FROM instances

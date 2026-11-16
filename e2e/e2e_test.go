@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +155,9 @@ func newStack(t *testing.T) stack {
 	}
 	rdone := make(chan error, 1)
 	rt := router.New(testPool, "apps.localhost", "")
+	rt.BaseDomain = "shipyard.localhost"
+	rt.CookieKey = []byte("e2e-cookie-key-e2e-cookie-key-xx")
+	rt.AccessCacheTTL = 300 * time.Millisecond
 	go func() { rdone <- rt.Serve(ctx, rln) }()
 	t.Cleanup(func() {
 		cancel()
@@ -246,6 +250,7 @@ func TestSampleAppsDeployAndServe(t *testing.T) {
 			if code, resp := s.post(t, "/api/v1/apps", "application/json", bytes.NewReader(body)); code != http.StatusCreated {
 				t.Fatalf("create app: %d %s", code, resp)
 			}
+			s.makePublic(t, sample.slug) // these tests are about building and serving; access has its own test
 
 			var form bytes.Buffer
 			mw := multipart.NewWriter(&form)
@@ -450,6 +455,7 @@ func TestAppLifecycleThroughAPI(t *testing.T) {
 	if code, resp := s.post(t, "/api/v1/apps", "application/json", strings.NewReader(`{"slug":"`+slug+`"}`)); code != http.StatusCreated {
 		t.Fatalf("create: %d %s", code, resp)
 	}
+	s.makePublic(t, slug)
 	var form bytes.Buffer
 	mw := multipart.NewWriter(&form)
 	fw, _ := mw.CreateFormFile("source", "static.tar.gz")
@@ -539,3 +545,237 @@ func TestAppLifecycleThroughAPI(t *testing.T) {
 		t.Fatalf("start of an app that was never deployed = %d %s, want 409", code, resp)
 	}
 }
+
+func (s stack) makePublic(t *testing.T, slug string) {
+	t.Helper()
+	if code, body := s.api(t, s.cookie, http.MethodPatch, "/api/v1/apps/"+slug, map[string]string{"visibility": "public"}); code != http.StatusOK {
+		t.Fatalf("make %s public: %d %s", slug, code, body)
+	}
+}
+
+// A browser would follow redirects across hosts; the test drives each hop itself.
+var noFollow = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+// viaRouter sends a request to the router as <slug>.apps.localhost.
+func (s stack) viaRouter(t *testing.T, slug, path string, hdr map[string]string, cookies ...*http.Cookie) (int, http.Header, []byte, []*http.Cookie) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, s.routerURL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = slug + ".apps.localhost"
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err := noFollow.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s via router: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header, body, resp.Cookies()
+}
+
+// viaAPI sends a GET to the API (a browser on shipyard.localhost) with an optional session.
+func (s stack) viaAPI(t *testing.T, pathAndQuery string, session *http.Cookie) (int, http.Header, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, s.server.URL+pathAndQuery, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session != nil {
+		req.AddCookie(session)
+	}
+	resp, err := noFollow.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", pathAndQuery, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header, body
+}
+
+// handoff runs the browser's steps from the router redirect to holding an
+// _sy_app cookie: router -> /auth/app -> router callback. It returns the
+// cookie, or nil and the status where it stopped.
+func (s stack) handoff(t *testing.T, slug string, session *http.Cookie) (*http.Cookie, int) {
+	t.Helper()
+	code, hdr, _, _ := s.viaRouter(t, slug, "/", nil)
+	if code != http.StatusFound {
+		t.Fatalf("router without a cookie: %d, want 302", code)
+	}
+	loc, err := url.Parse(hdr.Get("Location"))
+	if err != nil || loc.Host != "shipyard.localhost" || loc.Path != "/auth/app" {
+		t.Fatalf("router redirected to %q", hdr.Get("Location"))
+	}
+	code, hdr, _ = s.viaAPI(t, loc.RequestURI(), session)
+	if code != http.StatusFound {
+		return nil, code
+	}
+	cb, err := url.Parse(hdr.Get("Location"))
+	if err != nil || cb.Host != slug+".apps.localhost" || cb.Path != "/__shipyard/callback" {
+		t.Fatalf("handoff redirected to %q", hdr.Get("Location"))
+	}
+	code, hdr, _, cookies := s.viaRouter(t, slug, cb.RequestURI(), nil)
+	if code != http.StatusFound || hdr.Get("Location") != "/" {
+		t.Fatalf("callback: %d %q", code, hdr.Get("Location"))
+	}
+	for _, c := range cookies {
+		if c.Name == "_sy_app" {
+			return c, code
+		}
+	}
+	t.Fatal("callback set no _sy_app cookie")
+	return nil, 0
+}
+
+type whoamiReply struct {
+	UserEmail string            `json:"user_email"`
+	UserID    string            `json:"user_id"`
+	Cookies   map[string]string `json:"cookies"`
+	Headers   map[string]any    `json:"headers"`
+	Env       map[string]string `json:"env"`
+}
+
+func (s stack) deployDir(t *testing.T, slug, dir string) {
+	t.Helper()
+	if code, resp := s.post(t, "/api/v1/apps", "application/json", strings.NewReader(`{"slug":"`+slug+`"}`)); code != http.StatusCreated {
+		t.Fatalf("create %s: %d %s", slug, code, resp)
+	}
+	s.uploadDir(t, slug, dir)
+}
+
+func (s stack) uploadDir(t *testing.T, slug, dir string) {
+	t.Helper()
+	var form bytes.Buffer
+	mw := multipart.NewWriter(&form)
+	fw, _ := mw.CreateFormFile("source", dir+".tar.gz")
+	_, _ = fw.Write(packDir(t, filepath.Join("..", "testdata", "apps", dir)))
+	_ = mw.Close()
+	if code, resp := s.post(t, "/api/v1/apps/"+slug+"/deploys", mw.FormDataContentType(), &form); code != http.StatusAccepted {
+		t.Fatalf("deploy %s: %d %s", slug, code, resp)
+	}
+}
+
+// The core of the product: a private app, shared with one person, through the
+// auth handoff, and what the app itself is allowed to see.
+func TestPrivateAppAuthHandoff(t *testing.T) {
+	s := newStack(t)
+	slug := fmt.Sprintf("e2e-priv-%d", runCounter.Add(1))
+	cleanupApp(t, s, slug)
+	s.deployDir(t, slug, "whoami")
+	if state, e := waitFinished(t, slug); state != "live" {
+		t.Fatalf("deploy %s: %s", state, e)
+	}
+	ownerEmail := s.emailOf(t, s.cookie)
+
+	// 1. Anonymous: the handoff sends the browser to the dashboard login.
+	if code, hdr, _ := s.viaAPI(t, "/auth/app?app="+slug, nil); code != http.StatusFound || !strings.HasPrefix(hdr.Get("Location"), "/login?next=") {
+		t.Fatalf("anonymous handoff: %d %q", code, hdr.Get("Location"))
+	}
+
+	// 2. The owner passes the handoff and reaches the app.
+	ownerCookie, _ := s.handoff(t, slug, s.cookie)
+	spoof := map[string]string{"X-Shipyard-User-Email": "admin@evil.example", "X-Shipyard-User-Id": "evil"}
+	code, _, body, _ := s.viaRouter(t, slug, "/", spoof, ownerCookie, &http.Cookie{Name: "theme", Value: "dark"})
+	if code != http.StatusOK {
+		t.Fatalf("owner via router: %d %s", code, body)
+	}
+	var who whoamiReply
+	if err := json.Unmarshal(body, &who); err != nil {
+		t.Fatalf("whoami reply: %v %s", err, body)
+	}
+	if who.UserEmail != ownerEmail || who.UserID == "" || who.UserID == "evil" {
+		t.Errorf("the app sees user %q / %q, want the owner %q (spoofed headers must be overwritten)", who.UserEmail, who.UserID, ownerEmail)
+	}
+	if _, ok := who.Cookies["_sy_app"]; ok {
+		t.Error("the app received the _sy_app cookie")
+	}
+	if _, ok := who.Cookies["shipyard_session"]; ok {
+		t.Error("the app received the dashboard session cookie")
+	}
+	if who.Cookies["theme"] != "dark" {
+		t.Errorf("ordinary cookies must reach the app: %v", who.Cookies)
+	}
+
+	// 3. A handoff code works once.
+	_, hdr, _ := s.viaAPI(t, "/auth/app?app="+slug+"&return=%2Fx", s.cookie)
+	cb, _ := url.Parse(hdr.Get("Location"))
+	if code, _, _, _ := s.viaRouter(t, slug, cb.RequestURI(), nil); code != http.StatusFound {
+		t.Fatalf("first use of the code: %d", code)
+	}
+	if code, _, _, cookies := s.viaRouter(t, slug, cb.RequestURI(), nil); code != http.StatusForbidden || len(cookies) != 0 {
+		t.Fatalf("second use of the code: %d, cookies %v", code, cookies)
+	}
+
+	// 4. A stranger is refused; once the owner adds them they are in.
+	friendEmail := fmt.Sprintf("friend-%d@example.com", time.Now().UnixNano())
+	friend := s.signupAs(t, friendEmail)
+	if code, _, body := s.viaAPI(t, "/auth/app?app="+slug, friend); code != http.StatusForbidden || !strings.Contains(string(body), "No access") {
+		t.Fatalf("stranger: %d %s", code, body)
+	}
+	if code, resp := s.api(t, s.cookie, http.MethodPost, "/api/v1/apps/"+slug+"/members", map[string]string{"email": strings.ToUpper(friendEmail)}); code != http.StatusCreated {
+		t.Fatalf("add member: %d %s", code, resp)
+	}
+	friendCookie, _ := s.handoff(t, slug, friend)
+	code, _, body, _ = s.viaRouter(t, slug, "/", nil, friendCookie)
+	if err := json.Unmarshal(body, &who); code != http.StatusOK || err != nil || who.UserEmail != friendEmail {
+		t.Fatalf("member via router: %d %s", code, body)
+	}
+
+	// 5. The owner's cookie is not the friend's identity, and the friend's cookie opens only this app.
+	if code, _, _, _ := s.viaRouter(t, slug, "/", nil, &http.Cookie{Name: "_sy_app", Value: "forged"}); code != http.StatusFound {
+		t.Errorf("forged cookie: %d, want 302", code)
+	}
+
+	// 6. Removing the member ends their access (once the router's cache expires).
+	if code, resp := s.api(t, s.cookie, http.MethodDelete, "/api/v1/apps/"+slug+"/members/"+url.PathEscape(friendEmail), nil); code != http.StatusNoContent {
+		t.Fatalf("remove member: %d %s", code, resp)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if code, _, _, _ := s.viaRouter(t, slug, "/", nil, friendCookie); code == http.StatusFound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the removed member still reaches the app")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if code, _, _ := s.viaAPI(t, "/auth/app?app="+slug, friend); code != http.StatusForbidden {
+		t.Errorf("removed member's handoff: %d, want 403", code)
+	}
+
+	// 7. Public: anyone can use the app, and an anonymous visitor has no identity.
+	s.makePublic(t, slug)
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		code, _, body, _ := s.viaRouter(t, slug, "/", spoof)
+		if code == http.StatusOK {
+			var anon whoamiReply // fresh: unmarshalling JSON null keeps an old value
+			if err := json.Unmarshal(body, &anon); err != nil || anon.UserEmail != "" || anon.UserID != "" {
+				t.Fatalf("anonymous visitor of a public app has identity %q / %q (%v)", anon.UserEmail, anon.UserID, err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("public app still answers %d", code)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (s stack) emailOf(t *testing.T, session *http.Cookie) string {
+	t.Helper()
+	code, body := s.api(t, session, http.MethodGet, "/api/v1/me", nil)
+	var me struct{ Email string }
+	if code != http.StatusOK || json.Unmarshal(body, &me) != nil {
+		t.Fatalf("me: %d %s", code, body)
+	}
+	return me.Email
+}
+
+func (s stack) signupAs(t *testing.T, email string) *http.Cookie { return s.signup(t, email) }
