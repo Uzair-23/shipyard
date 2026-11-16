@@ -350,3 +350,192 @@ func waitFinished(t *testing.T, slug string) (state, errText string) {
 		time.Sleep(250 * time.Millisecond)
 	}
 }
+
+// api sends a JSON request as the given session (nil = anonymous).
+func (s stack) api(t *testing.T, cookie *http.Cookie, method, path string, body any) (int, []byte) {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, s.server.URL+path, rdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, data
+}
+
+func (s stack) waitStatus(t *testing.T, slug, want string) {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		code, body := s.api(t, s.cookie, http.MethodGet, "/api/v1/apps/"+slug, nil)
+		var app struct{ Status string }
+		if code == http.StatusOK && json.Unmarshal(body, &app) == nil {
+			if last = app.Status; last == want {
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("app %s did not reach status %q (last %q)", slug, want, last)
+}
+
+// waitRouter polls the app through the router until it answers want.
+func waitRouter(t *testing.T, routerURL, slug string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	last := 0
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest(http.MethodGet, routerURL+"/", nil)
+		req.Host = slug + ".apps.localhost"
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			last = resp.StatusCode
+			_ = resp.Body.Close()
+			if last == want {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("router answered %d for %s, want %d", last, slug, want)
+}
+
+func (s stack) containerIDs(t *testing.T, slug string) []string {
+	t.Helper()
+	var appID string
+	if err := testPool.QueryRow(context.Background(), `SELECT id::text FROM apps WHERE slug = $1 AND deleted_at IS NULL`, slug).Scan(&appID); err != nil {
+		return nil
+	}
+	return s.containersOf(t, appID)
+}
+
+func (s stack) containersOf(t *testing.T, appID string) []string {
+	t.Helper()
+	res, err := testDocker.ContainerList(context.Background(), client.ContainerListOptions{
+		All: true, Filters: make(client.Filters).Add("label", runtime.LabelAppID+"="+appID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(res.Items))
+	for i, c := range res.Items {
+		ids[i] = c.ID
+	}
+	return ids
+}
+
+// The user-visible lifecycle through the API, worker and router: stop, start,
+// restart and delete, with another user refused throughout.
+func TestAppLifecycleThroughAPI(t *testing.T) {
+	s := newStack(t)
+	slug := fmt.Sprintf("e2e-life-%d", runCounter.Add(1))
+	cleanupApp(t, s, slug)
+	const want = "Hello from Shipyard (static)"
+
+	if code, resp := s.post(t, "/api/v1/apps", "application/json", strings.NewReader(`{"slug":"`+slug+`"}`)); code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, resp)
+	}
+	var form bytes.Buffer
+	mw := multipart.NewWriter(&form)
+	fw, _ := mw.CreateFormFile("source", "static.tar.gz")
+	_, _ = fw.Write(packDir(t, filepath.Join("..", "testdata", "apps", "static-site")))
+	_ = mw.Close()
+	if code, resp := s.post(t, "/api/v1/apps/"+slug+"/deploys", mw.FormDataContentType(), &form); code != http.StatusAccepted {
+		t.Fatalf("deploy: %d %s", code, resp)
+	}
+	if state, e := waitFinished(t, slug); state != "live" {
+		t.Fatalf("deploy %s: %s", state, e)
+	}
+	if got := getViaRouter(t, s.routerURL, slug); got.status != http.StatusOK || !strings.Contains(got.body, want) {
+		t.Fatalf("live app via router = %d %q", got.status, got.body)
+	}
+
+	other := s.signup(t, fmt.Sprintf("other-%d@example.com", time.Now().UnixNano()))
+	for _, action := range []string{"stop", "start", "restart"} {
+		if code, _ := s.api(t, other, http.MethodPost, "/api/v1/apps/"+slug+"/"+action, nil); code != http.StatusNotFound {
+			t.Errorf("another user's %s = %d, want 404", action, code)
+		}
+	}
+	if code, _ := s.api(t, other, http.MethodDelete, "/api/v1/apps/"+slug, nil); code != http.StatusNotFound {
+		t.Errorf("another user's delete = %d, want 404", code)
+	}
+
+	// Stop: container gone, router shows "not running", the deploy stays live.
+	if code, resp := s.api(t, s.cookie, http.MethodPost, "/api/v1/apps/"+slug+"/stop", nil); code != http.StatusAccepted {
+		t.Fatalf("stop: %d %s", code, resp)
+	}
+	s.waitStatus(t, slug, "stopped")
+	waitRouter(t, s.routerURL, slug, http.StatusServiceUnavailable)
+	if ids := s.containerIDs(t, slug); len(ids) != 0 {
+		t.Fatalf("containers after stop: %v", ids)
+	}
+
+	// Start: back, from the same live deploy.
+	if code, resp := s.api(t, s.cookie, http.MethodPost, "/api/v1/apps/"+slug+"/start", nil); code != http.StatusAccepted {
+		t.Fatalf("start: %d %s", code, resp)
+	}
+	s.waitStatus(t, slug, "running")
+	waitRouter(t, s.routerURL, slug, http.StatusOK)
+	before := s.containerIDs(t, slug)
+	if len(before) != 1 {
+		t.Fatalf("containers after start: %v", before)
+	}
+
+	// Restart: a different container, serving again.
+	if code, resp := s.api(t, s.cookie, http.MethodPost, "/api/v1/apps/"+slug+"/restart", nil); code != http.StatusAccepted {
+		t.Fatalf("restart: %d %s", code, resp)
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if ids := s.containerIDs(t, slug); len(ids) == 1 && ids[0] != before[0] {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("restart did not replace the container (still %v)", s.containerIDs(t, slug))
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	s.waitStatus(t, slug, "running")
+	waitRouter(t, s.routerURL, slug, http.StatusOK)
+
+	// Delete: gone from the API and router, container removed, slug free again.
+	var appID string
+	if err := testPool.QueryRow(context.Background(), `SELECT id::text FROM apps WHERE slug = $1 AND deleted_at IS NULL`, slug).Scan(&appID); err != nil {
+		t.Fatal(err)
+	}
+	if code, resp := s.api(t, s.cookie, http.MethodDelete, "/api/v1/apps/"+slug, nil); code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", code, resp)
+	}
+	if code, _ := s.api(t, s.cookie, http.MethodGet, "/api/v1/apps/"+slug, nil); code != http.StatusNotFound {
+		t.Errorf("GET after delete = %d, want 404", code)
+	}
+	waitRouter(t, s.routerURL, slug, http.StatusNotFound)
+	deadline = time.Now().Add(30 * time.Second)
+	for len(s.containersOf(t, appID)) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("containers after delete: %v", s.containersOf(t, appID))
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if code, resp := s.post(t, "/api/v1/apps", "application/json", strings.NewReader(`{"slug":"`+slug+`"}`)); code != http.StatusCreated {
+		t.Fatalf("re-creating the deleted slug: %d %s", code, resp)
+	}
+	if code, resp := s.api(t, s.cookie, http.MethodPost, "/api/v1/apps/"+slug+"/start", nil); code != http.StatusConflict {
+		t.Fatalf("start of an app that was never deployed = %d %s, want 409", code, resp)
+	}
+}

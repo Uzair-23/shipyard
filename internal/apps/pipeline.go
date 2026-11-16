@@ -29,8 +29,11 @@ import (
 
 // Job kinds handled by the pipeline.
 const (
-	KindBuild = "build"
-	KindStart = "start"
+	KindBuild   = "build"
+	KindStart   = "start"
+	KindStop    = "stop"    // stop an app's containers (user stop, delete)
+	KindLaunch  = "launch"  // start a stopped app from its live deploy
+	KindRestart = "restart" // stop, then launch
 )
 
 // DeployPayload is the payload of build and start jobs.
@@ -74,7 +77,10 @@ type Pipeline struct {
 
 // Handlers returns the job handlers to register with a jobs.Worker.
 func (p *Pipeline) Handlers() map[string]jobs.Handler {
-	return map[string]jobs.Handler{KindBuild: p.Build, KindStart: p.Start}
+	return map[string]jobs.Handler{
+		KindBuild: p.Build, KindStart: p.Start,
+		KindStop: p.Stop, KindLaunch: p.Launch, KindRestart: p.Restart,
+	}
 }
 
 func deployID(job store.Job) (pgtype.UUID, error) {

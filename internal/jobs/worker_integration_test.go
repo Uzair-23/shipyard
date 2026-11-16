@@ -335,7 +335,7 @@ func createApp(t *testing.T, slug string) pgtype.UUID {
 	t.Helper()
 	var id pgtype.UUID
 	err := testPool.QueryRow(context.Background(),
-		`INSERT INTO apps (slug) VALUES ($1) ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug RETURNING id`, slug).Scan(&id)
+		`INSERT INTO apps (slug) VALUES ($1) ON CONFLICT (slug) WHERE deleted_at IS NULL DO UPDATE SET slug = EXCLUDED.slug RETURNING id`, slug).Scan(&id)
 	if err != nil {
 		t.Fatalf("create app: %v", err)
 	}
