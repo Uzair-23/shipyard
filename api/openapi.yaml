@@ -1,0 +1,157 @@
+openapi: 3.1.0
+info:
+  title: Shipyard API
+  version: 0.1.0
+  description: |
+    M1 temporary endpoints. They are unauthenticated and exist only for local
+    development; accounts and tokens arrive in M3.
+servers:
+  - url: http://shipyard.localhost
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness and database reachability
+      responses:
+        "200":
+          description: Database reachable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: Database unreachable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+  /api/v1/apps:
+    post:
+      operationId: createApp
+      summary: Create an app
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAppRequest" }
+      responses:
+        "201":
+          description: App created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/App" }
+        "400":
+          description: Not JSON, malformed, unknown field, or invalid slug (`invalid_request`, `invalid_slug`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Slug already taken (`slug_taken`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/apps/{slug}/deploys:
+    post:
+      operationId: createDeploy
+      summary: Upload source and queue a deploy
+      description: |
+        Streams the `source` file (a .tar.gz, at most 50 MB / 5,000 entries) through
+        validation and stores only the normalised archive. The build runs
+        asynchronously in the worker.
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [source]
+              properties:
+                source:
+                  type: string
+                  format: binary
+                  description: Source folder as a .tar.gz
+      responses:
+        "202":
+          description: Deploy queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deploy" }
+        "400":
+          description: Missing or malformed form, or an unsafe or invalid archive (`invalid_request`, `invalid_upload`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No such app (`not_found`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: A deploy of this app is still in progress (`deploy_in_progress`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: Upload larger than the limit (`upload_too_large`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Too many uploads in progress; see `Retry-After` (`too_many_uploads`)
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+components:
+  responses:
+    InternalError:
+      description: Unexpected server error (`internal_error`); details are only in server logs
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Health:
+      type: object
+      required: [db]
+      properties:
+        db: { type: string, enum: [ok, error] }
+    CreateAppRequest:
+      type: object
+      additionalProperties: false
+      required: [slug]
+      properties:
+        slug:
+          type: string
+          description: 3-30 characters; lowercase letters, digits and hyphens; not starting or ending with a hyphen; some names are reserved
+          pattern: "^[a-z0-9][a-z0-9-]{1,28}[a-z0-9]$"
+    App:
+      type: object
+      required: [slug, status, created_at]
+      properties:
+        slug: { type: string }
+        status: { type: string, enum: [stopped, starting, running, sleeping, crashed] }
+        created_at: { type: string, format: date-time }
+    Deploy:
+      type: object
+      required: [slug, seq, state]
+      properties:
+        slug: { type: string }
+        seq: { type: integer, minimum: 1 }
+        state: { type: string, enum: [queued] }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }

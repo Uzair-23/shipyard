@@ -27,7 +27,7 @@ func TestHealthz(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-			NewRouter(fakePinger{err: tt.pingErr}).ServeHTTP(rec, req)
+			NewRouter(fakePinger{err: tt.pingErr}, nil).ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)

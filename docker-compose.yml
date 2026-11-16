@@ -58,6 +58,14 @@ services:
   shipyard-api:
     <<: *shipyard
     command: ["api"]
+    environment:
+      SHIPYARD_DATABASE_URL: postgres://shipyard:${POSTGRES_PASSWORD:-shipyard-dev}@postgres:5432/shipyard?sslmode=disable
+      SHIPYARD_BASE_DOMAIN: ${SHIPYARD_BASE_DOMAIN:-shipyard.localhost}
+      SHIPYARD_APPS_DOMAIN: ${SHIPYARD_APPS_DOMAIN:-apps.localhost}
+      SHIPYARD_DATA_DIR: /data
+    # Uploaded sources are shared with the host-run worker (ADR 011).
+    volumes:
+      - ./data:/data
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -65,7 +73,7 @@ services:
   caddy:
     image: caddy:2
     ports:
-      - "80:80"
+      - "127.0.0.1:80:80" # loopback only: the M1 API has no auth
     volumes:
       - ./deploy/Caddyfile.local:/etc/caddy/Caddyfile:ro
     depends_on:

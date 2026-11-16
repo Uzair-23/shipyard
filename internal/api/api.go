@@ -19,10 +19,13 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// NewRouter builds the API handler.
-func NewRouter(db Pinger) http.Handler {
+// NewRouter builds the API handler. apps may be nil (health check only).
+func NewRouter(db Pinger, apps *Apps) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/healthz", healthz(db))
+	if apps != nil {
+		apps.mount(r)
+	}
 	return r
 }
 

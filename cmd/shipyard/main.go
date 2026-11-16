@@ -69,8 +69,10 @@ func runAPI(ctx context.Context) error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(pool),
+		Handler:           api.NewRouter(pool, api.NewApps(pool, cfg.DataDir, cfg.BaseDomain)),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 	}
 	slog.Info("starting", "role", "api", "addr", cfg.HTTPAddr)
 
