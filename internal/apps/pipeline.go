@@ -22,6 +22,7 @@ import (
 
 	"github.com/Uzair-23/shipyard/internal/build"
 	"github.com/Uzair-23/shipyard/internal/jobs"
+	"github.com/Uzair-23/shipyard/internal/runtime"
 	"github.com/Uzair-23/shipyard/internal/store"
 )
 
@@ -53,12 +54,13 @@ func SourceRelPath(appID pgtype.UUID, sourceRef string) (string, error) {
 type Pipeline struct {
 	Pool    *pgxpool.Pool
 	Builder *build.Builder
+	Engine  *runtime.Engine
 	DataDir string
 }
 
 // Handlers returns the job handlers to register with a jobs.Worker.
 func (p *Pipeline) Handlers() map[string]jobs.Handler {
-	return map[string]jobs.Handler{KindBuild: p.Build}
+	return map[string]jobs.Handler{KindBuild: p.Build, KindStart: p.Start}
 }
 
 func deployID(job store.Job) (pgtype.UUID, error) {

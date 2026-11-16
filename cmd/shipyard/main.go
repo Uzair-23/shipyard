@@ -21,6 +21,7 @@ import (
 	"github.com/Uzair-23/shipyard/internal/build"
 	"github.com/Uzair-23/shipyard/internal/config"
 	"github.com/Uzair-23/shipyard/internal/jobs"
+	"github.com/Uzair-23/shipyard/internal/runtime"
 	"github.com/Uzair-23/shipyard/internal/store"
 )
 
@@ -110,9 +111,14 @@ func runWorker(ctx context.Context) error {
 	}
 	defer func() { _ = docker.Close() }()
 
+	engine, err := runtime.NewEngine(ctx, docker)
+	if err != nil {
+		return fmt.Errorf("init container engine: %w", err)
+	}
 	pipeline := &apps.Pipeline{
 		Pool:    pool,
 		Builder: &build.Builder{Docker: docker, Registry: cfg.Registry},
+		Engine:  engine,
 		DataDir: cfg.DataDir,
 	}
 	w := &jobs.Worker{

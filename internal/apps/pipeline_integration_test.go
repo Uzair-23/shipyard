@@ -23,6 +23,7 @@ import (
 
 	"github.com/Uzair-23/shipyard/internal/build"
 	"github.com/Uzair-23/shipyard/internal/jobs"
+	"github.com/Uzair-23/shipyard/internal/runtime"
 	"github.com/Uzair-23/shipyard/internal/store"
 	"github.com/Uzair-23/shipyard/internal/testdb"
 )
@@ -73,15 +74,26 @@ type fixture struct {
 
 func newFixture(t *testing.T, slug string) fixture {
 	t.Helper()
+	engine, err := runtime.NewEngine(context.Background(), testDocker)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f := fixture{pipeline: &Pipeline{
 		Pool:    testPool,
 		Builder: &build.Builder{Docker: testDocker, Registry: testRegistry},
+		Engine:  engine,
 		DataDir: t.TempDir(),
 	}}
 	if err := testPool.QueryRow(context.Background(), `INSERT INTO apps (slug) VALUES ($1) RETURNING id`, slug).Scan(&f.appID); err != nil {
 		t.Fatalf("create app: %v", err)
 	}
 	t.Cleanup(func() {
+		ctrs, _ := testDocker.ContainerList(context.Background(), client.ContainerListOptions{
+			All: true, Filters: make(client.Filters).Add("label", runtime.LabelAppID+"="+f.appID.String()),
+		})
+		for _, c := range ctrs.Items {
+			_, _ = testDocker.ContainerRemove(context.Background(), c.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
+		}
 		imgs, _ := testDocker.ImageList(context.Background(), client.ImageListOptions{
 			Filters: make(client.Filters).Add("reference", f.pipeline.Builder.Repository(f.appID.String())+"*"),
 		})
