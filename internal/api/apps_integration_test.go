@@ -92,6 +92,7 @@ func newEnv(t *testing.T) env {
 	t.Helper()
 	dir := t.TempDir()
 	a := NewApps(testPool, dir, "shipyard.localhost")
+	a.MasterKey = bytes.Repeat([]byte{3}, 32)
 	h := NewRouter(fakePinger{}, a)
 	email := fmt.Sprintf("user%d@example.com", userSeq.Add(1))
 	return env{api: a, handler: h, dataDir: dir, cookie: signup(t, h, email)}

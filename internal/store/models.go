@@ -43,6 +43,15 @@ type Deploy struct {
 	FinishedAt     pgtype.Timestamptz
 }
 
+type EnvVar struct {
+	AppID          pgtype.UUID
+	Key            string
+	ValueEncrypted []byte
+	Nonce          []byte
+	IsSecret       bool
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type HandoffCode struct {
 	CodeHash   []byte
 	AppID      pgtype.UUID

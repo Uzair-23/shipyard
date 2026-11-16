@@ -193,7 +193,7 @@ func (q *Queries) ListOwnedApps(ctx context.Context, ownerID pgtype.UUID) ([]Lis
 }
 
 const lockOwnedApp = `-- name: LockOwnedApp :one
-SELECT id, current_deploy_id FROM apps
+SELECT id, current_deploy_id, desired_state FROM apps
 WHERE slug = $1 AND owner_id = $2 AND deleted_at IS NULL
 FOR UPDATE
 `
@@ -206,13 +206,14 @@ type LockOwnedAppParams struct {
 type LockOwnedAppRow struct {
 	ID              pgtype.UUID
 	CurrentDeployID pgtype.UUID
+	DesiredState    string
 }
 
 // Serialises changes to one app inside the changing transaction.
 func (q *Queries) LockOwnedApp(ctx context.Context, arg LockOwnedAppParams) (LockOwnedAppRow, error) {
 	row := q.db.QueryRow(ctx, lockOwnedApp, arg.Slug, arg.OwnerID)
 	var i LockOwnedAppRow
-	err := row.Scan(&i.ID, &i.CurrentDeployID)
+	err := row.Scan(&i.ID, &i.CurrentDeployID, &i.DesiredState)
 	return i, err
 }
 

@@ -159,7 +159,11 @@ func (p *Pipeline) bringUp(ctx context.Context, job store.Job, appID, deployID p
 		return fmt.Errorf("set app status: %w", err)
 	}
 
-	started, err := p.startInstance(ctx, appID.String(), deployID.String(), ins.ID.String(), image, log)
+	env, err := p.userEnv(ctx, appID)
+	if err != nil {
+		return err
+	}
+	started, err := p.startInstance(ctx, appID.String(), deployID.String(), ins.ID.String(), image, env, log)
 	var exitedAtStart *runtime.ExitedError
 	if errors.As(err, &exitedAtStart) {
 		log.Info("app exited at start", "reason", err)

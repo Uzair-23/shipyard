@@ -129,13 +129,17 @@ func newStack(t *testing.T) stack {
 	if err != nil {
 		t.Fatal(err)
 	}
+	masterKey := bytes.Repeat([]byte{4}, 32)
 	pipeline := &apps.Pipeline{
-		Pool:    testPool,
-		Builder: &build.Builder{Docker: testDocker, Registry: testRegistry},
-		Engine:  engine,
-		DataDir: dataDir,
+		MasterKey: masterKey,
+		Pool:      testPool,
+		Builder:   &build.Builder{Docker: testDocker, Registry: testRegistry},
+		Engine:    engine,
+		DataDir:   dataDir,
 	}
-	srv := httptest.NewServer(api.NewRouter(nil, api.NewApps(testPool, dataDir, "shipyard.localhost")))
+	apiApps := api.NewApps(testPool, dataDir, "shipyard.localhost")
+	apiApps.MasterKey = masterKey
+	srv := httptest.NewServer(api.NewRouter(nil, apiApps))
 	t.Cleanup(srv.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -766,6 +770,47 @@ func TestPrivateAppAuthHandoff(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+
+	// 8. Environment variables and secrets reach the running app; a change restarts it.
+	const secret = "e2e-secret-value-123"
+	if code, resp := s.api(t, s.cookie, http.MethodPut, "/api/v1/apps/"+slug+"/env/DEMO_SECRET", map[string]any{"value": secret, "is_secret": true}); code != http.StatusOK || strings.Contains(string(resp), secret) {
+		t.Fatalf("put secret: %d %s", code, resp)
+	}
+	if code, resp := s.api(t, s.cookie, http.MethodPut, "/api/v1/apps/"+slug+"/env/DEMO_PLAIN", map[string]any{"value": "visible-value"}); code != http.StatusOK {
+		t.Fatalf("put plain: %d %s", code, resp)
+	}
+	s.waitEnv(t, slug, func(env map[string]string) bool {
+		return env["DEMO_SECRET"] == secret && env["DEMO_PLAIN"] == "visible-value"
+	})
+	if code, resp := s.api(t, s.cookie, http.MethodGet, "/api/v1/apps/"+slug+"/env", nil); code != http.StatusOK || strings.Contains(string(resp), secret) || !strings.Contains(string(resp), "visible-value") {
+		t.Fatalf("list env: %d %s", code, resp)
+	}
+	if code, resp := s.api(t, s.cookie, http.MethodDelete, "/api/v1/apps/"+slug+"/env/DEMO_SECRET", nil); code != http.StatusNoContent {
+		t.Fatalf("delete secret: %d %s", code, resp)
+	}
+	s.waitEnv(t, slug, func(env map[string]string) bool {
+		_, has := env["DEMO_SECRET"]
+		return !has && env["DEMO_PLAIN"] == "visible-value"
+	})
+}
+
+// waitEnv polls the public whoami app until its environment satisfies ok (the app restarts in between).
+func (s stack) waitEnv(t *testing.T, slug string, ok func(map[string]string) bool) {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		code, _, body, _ := s.viaRouter(t, slug, "/", nil)
+		var who whoamiReply
+		if code == http.StatusOK && json.Unmarshal(body, &who) == nil {
+			last = fmt.Sprint(who.Env)
+			if ok(who.Env) {
+				return
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("the app's environment never matched (last %s)", last)
 }
 
 func (s stack) emailOf(t *testing.T, session *http.Cookie) string {

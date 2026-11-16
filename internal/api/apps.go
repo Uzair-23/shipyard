@@ -76,6 +76,9 @@ type Apps struct {
 	// whose Origin is any other site, including app subdomains, are refused.
 	BaseDomain string
 
+	// MasterKey encrypts environment variables; nil disables them (503).
+	MasterKey []byte
+
 	sessions auth.Sessions
 	uploads  chan struct{}
 }
@@ -101,6 +104,9 @@ func (a *Apps) mount(r chi.Router) {
 			g.Get("/apps/{slug}", a.getApp)
 			g.Patch("/apps/{slug}", a.patchApp)
 			g.Delete("/apps/{slug}", a.deleteApp)
+			g.Get("/apps/{slug}/env", a.listEnv)
+			g.Put("/apps/{slug}/env/{key}", a.putEnv)
+			g.Delete("/apps/{slug}/env/{key}", a.deleteEnv)
 			g.Get("/apps/{slug}/members", a.listMembers)
 			g.Post("/apps/{slug}/members", a.addMember)
 			g.Delete("/apps/{slug}/members/{email}", a.removeMember)

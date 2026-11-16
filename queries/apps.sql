@@ -8,7 +8,7 @@ SELECT id FROM apps WHERE slug = @slug AND owner_id = @owner_id AND deleted_at I
 
 -- name: LockOwnedApp :one
 -- Serialises changes to one app inside the changing transaction.
-SELECT id, current_deploy_id FROM apps
+SELECT id, current_deploy_id, desired_state FROM apps
 WHERE slug = @slug AND owner_id = @owner_id AND deleted_at IS NULL
 FOR UPDATE;
 

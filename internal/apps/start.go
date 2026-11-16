@@ -73,7 +73,11 @@ func (p *Pipeline) Start(ctx context.Context, job store.Job) error {
 		return fmt.Errorf("get or create instance: %w", err)
 	}
 
-	started, err := p.startInstance(ctx, d.AppID.String(), id.String(), ins.ID.String(), image, log)
+	env, err := p.userEnv(ctx, d.AppID)
+	if err != nil {
+		return err
+	}
+	started, err := p.startInstance(ctx, d.AppID.String(), id.String(), ins.ID.String(), image, env, log)
 	var exitedAtStart *runtime.ExitedError
 	if errors.As(err, &exitedAtStart) {
 		// The app crashed before it could be probed: the same as failing its health check.
@@ -146,8 +150,8 @@ func (p *Pipeline) healthTimeout() time.Duration {
 }
 
 // startInstance starts the container and records it on the instance row.
-func (p *Pipeline) startInstance(ctx context.Context, appID, deployID, instanceID, image string, log *slog.Logger) (runtime.Instance, error) {
-	started, err := p.Engine.Start(ctx, runtime.Spec{AppID: appID, DeployID: deployID, InstanceID: instanceID, Image: image})
+func (p *Pipeline) startInstance(ctx context.Context, appID, deployID, instanceID, image string, env []string, log *slog.Logger) (runtime.Instance, error) {
+	started, err := p.Engine.Start(ctx, runtime.Spec{AppID: appID, DeployID: deployID, InstanceID: instanceID, Image: image, Env: env})
 	if err != nil {
 		return started, err // an *runtime.ExitedError still carries the container id
 	}

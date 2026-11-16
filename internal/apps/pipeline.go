@@ -71,6 +71,8 @@ type Pipeline struct {
 	Builder *build.Builder
 	Engine  containerEngine // normally *runtime.Engine
 	DataDir string
+	// MasterKey decrypts the apps' environment variables (see internal/secrets).
+	MasterKey []byte
 
 	HealthTimeout time.Duration // default runtime.HealthTimeout (30s)
 }

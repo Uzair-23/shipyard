@@ -70,6 +70,10 @@ func runAPI(ctx context.Context) error {
 
 	apps := api.NewApps(pool, cfg.DataDir, cfg.BaseDomain)
 	apps.AppsDomain = cfg.AppsDomain
+	if apps.MasterKey, err = secrets.LoadMasterKey(os.Getenv, cfg.DataDir); err != nil {
+		// Not fatal: the rest of the API works; environment variables answer 503.
+		slog.Error("no master key: environment variables are disabled", "error", err)
+	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           api.NewRouter(pool, apps),
@@ -125,6 +129,9 @@ func runWorker(ctx context.Context) error {
 		Builder: &build.Builder{Docker: docker, Registry: cfg.Registry},
 		Engine:  engine,
 		DataDir: cfg.DataDir,
+	}
+	if pipeline.MasterKey, err = secrets.LoadMasterKey(os.Getenv, cfg.DataDir); err != nil {
+		return fmt.Errorf("load master key: %w", err)
 	}
 	w := &jobs.Worker{
 		Pool:        pool,

@@ -19,11 +19,16 @@ import (
 // decodeJSON reads a small JSON body into v (unknown fields are errors).
 // It answers 400 itself and returns false when the body is unusable.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any, example string) bool {
+	return decodeJSONLimit(w, r, v, example, maxJSONBody)
+}
+
+// decodeJSONLimit is decodeJSON with a body size limit in bytes.
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, v any, example string, limit int64) bool {
 	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "send a JSON body with Content-Type: application/json")
 		return false
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBody))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "body must be JSON like "+example)
