@@ -80,6 +80,10 @@ func TestDockerfileInvariants(t *testing.T) {
 					}
 				case "CMD":
 					cmds++
+				case "LABEL":
+					if line != "LABEL shipyard.app_id="+testAppID {
+						t.Errorf("unexpected label %q", line)
+					}
 				case "FROM", "ENV", "WORKDIR", "EXPOSE":
 				default:
 					t.Errorf("unexpected instruction %q", line)

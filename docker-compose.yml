@@ -38,9 +38,12 @@ services:
       timeout: 3s
       retries: 30
 
-  # Local image registry (not published to the host).
+  # Local image registry. Published on loopback only so the Docker engine can
+  # push to it (ADR 011); localhost registries are allowed over plain HTTP.
   registry:
     image: registry:2
+    ports:
+      - "127.0.0.1:5000:5000"
     volumes:
       - registry:/var/lib/registry
 

@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/moby/moby/client"
 
 	"github.com/Uzair-23/shipyard/internal/api"
+	"github.com/Uzair-23/shipyard/internal/apps"
+	"github.com/Uzair-23/shipyard/internal/build"
 	"github.com/Uzair-23/shipyard/internal/config"
 	"github.com/Uzair-23/shipyard/internal/jobs"
 	"github.com/Uzair-23/shipyard/internal/store"
@@ -101,10 +104,21 @@ func runWorker(ctx context.Context) error {
 	}
 	defer pool.Close()
 
+	docker, err := client.New(client.FromEnv)
+	if err != nil {
+		return fmt.Errorf("create docker client: %w", err)
+	}
+	defer func() { _ = docker.Close() }()
+
+	pipeline := &apps.Pipeline{
+		Pool:    pool,
+		Builder: &build.Builder{Docker: docker, Registry: cfg.Registry},
+		DataDir: cfg.DataDir,
+	}
 	w := &jobs.Worker{
 		Pool:        pool,
 		Concurrency: concurrency,
-		Handlers:    map[string]jobs.Handler{}, // build/start handlers arrive in later M1 tasks
+		Handlers:    pipeline.Handlers(),
 	}
 	return w.Run(ctx)
 }
