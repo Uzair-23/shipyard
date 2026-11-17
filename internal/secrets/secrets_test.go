@@ -114,25 +114,32 @@ func TestLoadMasterKeyCreatesAndReusesAFile(t *testing.T) {
 }
 
 // Several processes starting together must all end up with the same key.
+// The race window is tiny (a reader must open the file between its creation and
+// the write of the key), so this repeats the scenario with fresh directories.
 func TestLoadMasterKeyConcurrentCreatorsAgree(t *testing.T) {
-	dir := t.TempDir()
-	keys := make([][]byte, 8)
-	var wg sync.WaitGroup
-	for i := range keys {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			k, err := LoadMasterKey(env(nil), dir)
-			if err != nil {
-				t.Error(err)
+	for round := range 100 {
+		dir := t.TempDir()
+		keys := make([][]byte, 8)
+		var wg sync.WaitGroup
+		for i := range keys {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				k, err := LoadMasterKey(env(nil), dir)
+				if err != nil {
+					t.Errorf("round %d: %v", round, err)
+				}
+				keys[i] = k
+			}()
+		}
+		wg.Wait()
+		for i := range keys {
+			if !bytes.Equal(keys[0], keys[i]) {
+				t.Fatalf("round %d: process %d got a different key", round, i)
 			}
-			keys[i] = k
-		}()
-	}
-	wg.Wait()
-	for i := range keys {
-		if !bytes.Equal(keys[0], keys[i]) {
-			t.Fatalf("process %d got a different key", i)
+		}
+		if t.Failed() {
+			return
 		}
 	}
 }
