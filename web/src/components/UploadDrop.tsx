@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react'
 import { toast } from '../lib/toast.ts'
 
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024 // same as the API's limit
+
 /** Drag-and-drop (or click) picker for a .zip or .tar.gz source archive. */
 export default function UploadDrop({
   onFile,
@@ -18,6 +20,10 @@ export default function UploadDrop({
     if (!f) return
     if (!/\.(zip|tar\.gz|tgz)$/i.test(f.name)) {
       toast('error', 'Please upload a .zip (right-click your folder and compress it) or a .tar.gz.')
+      return
+    }
+    if (f.size > MAX_UPLOAD_BYTES) {
+      toast('error', `That file is ${Math.round(f.size / 1048576)} MB; the limit is 50 MB. Leave out node_modules, virtual environments and build output.`)
       return
     }
     onFile(f)

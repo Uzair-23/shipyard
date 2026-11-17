@@ -37,6 +37,9 @@ const (
 	formOverhead  = 1 << 20
 	maxJSONBody   = 4 << 10
 	uploadTimeout = 2 * time.Minute
+	// maxDrain is how much of a rejected upload is read and thrown away so the
+	// browser can finish sending and see the error (see drainBody).
+	maxDrain = 512 << 20
 )
 
 // Slugs become subdomains (M2): lowercase letters, digits and inner hyphens, 3-30 chars.
@@ -194,6 +197,7 @@ func (a *Apps) createDeploy(w http.ResponseWriter, r *http.Request) {
 	// A slow upload must not hold an upload slot forever.
 	ctx, cancel := context.WithTimeout(r.Context(), uploadTimeout)
 	defer cancel()
+	defer drainBody(r)                                                               // runs before the response is sent, so the client sees our answer
 	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(uploadTimeout)) // unsupported in tests
 	user, _ := userFrom(ctx)
 	appID, err := store.New(a.Pool).GetOwnedAppID(ctx, store.GetOwnedAppIDParams{Slug: slug, OwnerID: user.ID})
@@ -250,6 +254,15 @@ func (a *Apps) createDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("deploy queued", "app_id", appID.String(), "deploy_id", deploy.ID.String(), "seq", deploy.Seq)
 	writeJSON(w, http.StatusAccepted, map[string]any{"slug": slug, "seq": deploy.Seq, "state": deploy.State})
+}
+
+// drainBody reads and discards what is left of the request body (up to
+// maxDrain, within the read deadline). When the server answers and closes while
+// the browser is still sending a large file, the browser loses the response and
+// shows "could not reach the server" instead of "file too large". Reading the
+// rest first lets the browser finish and receive the real error.
+func drainBody(r *http.Request) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxDrain))
 }
 
 func multipartReader(r *http.Request, body io.Reader) (*multipartPartReader, error) {
