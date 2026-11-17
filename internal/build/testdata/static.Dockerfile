@@ -9,9 +9,11 @@ ENV HOME=/tmp \
     XDG_DATA_HOME=/tmp/caddy/data \
     PORT=8080
 # Root steps take no user input: strip setuid/setgid bits, write a fixed
-# Caddyfile (admin API off, dotfiles such as .env and .git never served).
+# Caddyfile (admin API off, dotfiles such as .env and .git never served, and
+# paths that are not files or folders fall back to /index.html so that
+# single-page apps keep working when a sub-page is reloaded).
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + \
-    && printf '%s\n' '{' '	admin off' '	auto_https off' '}' ':8080 {' '	root * /srv' '	file_server {' '		hide .*' '	}' '}' > /etc/caddy/Caddyfile
+    && printf '%s\n' '{' '	admin off' '	auto_https off' '}' ':8080 {' '	root * /srv' '	@spa {' '		not path_regexp \.[A-Za-z0-9]+$' '		not path_regexp (^|/)\.' '		not file {' '			try_files {path} {path}/index.html' '		}' '	}' '	rewrite @spa /index.html' '	file_server {' '		hide .*' '	}' '}' > /etc/caddy/Caddyfile
 USER 10001:10001
 # Files stay root-owned: the app user can read but not modify them.
 COPY src/ /srv/
