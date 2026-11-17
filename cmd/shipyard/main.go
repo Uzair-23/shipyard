@@ -138,6 +138,7 @@ func runWorker(ctx context.Context) error {
 		Concurrency: concurrency,
 		Handlers:    pipeline.Handlers(),
 	}
+	go pipeline.RunReaper(ctx, apps.ReaperInterval)
 	return w.Run(ctx)
 }
 

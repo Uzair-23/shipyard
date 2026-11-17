@@ -62,6 +62,66 @@ func (q *Queries) GetAppForLifecycle(ctx context.Context, id pgtype.UUID) (GetAp
 	return i, err
 }
 
+const isAppIdle = `-- name: IsAppIdle :one
+SELECT EXISTS (
+  SELECT 1 FROM apps a
+  WHERE a.id = $1 AND a.deleted_at IS NULL AND a.status = 'running' AND a.desired_state = 'running'
+    AND a.current_deploy_id IS NOT NULL
+    AND greatest(
+          coalesce(a.last_request_at, '-infinity'::timestamptz),
+          coalesce((SELECT max(i.created_at) FROM instances i
+                    WHERE i.deploy_id = a.current_deploy_id AND i.state = 'running'),
+                   '-infinity'::timestamptz)
+        ) < now() - a.idle_timeout_s * interval '1 second'
+)::boolean AS idle
+`
+
+// The same test for one app, used by the sleep job to re-check before stopping.
+func (q *Queries) IsAppIdle(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, isAppIdle, id)
+	var idle bool
+	err := row.Scan(&idle)
+	return idle, err
+}
+
+const listIdleApps = `-- name: ListIdleApps :many
+SELECT a.id FROM apps a
+WHERE a.deleted_at IS NULL AND a.status = 'running' AND a.desired_state = 'running'
+  AND a.current_deploy_id IS NOT NULL
+  AND greatest(
+        coalesce(a.last_request_at, '-infinity'::timestamptz),
+        coalesce((SELECT max(i.created_at) FROM instances i
+                  WHERE i.deploy_id = a.current_deploy_id AND i.state = 'running'),
+                 '-infinity'::timestamptz)
+      ) < now() - a.idle_timeout_s * interval '1 second'
+  AND NOT EXISTS (SELECT 1 FROM jobs j
+                  WHERE j.app_id = a.id AND j.kind = 'sleep' AND j.state IN ('queued', 'running'))
+`
+
+// Running apps that have served no request for longer than their idle timeout.
+// The newest running instance counts as activity, so an app that was just
+// (re)started is not put back to sleep because of an old last_request_at.
+// Apps that already have a queued or running sleep job are skipped.
+func (q *Queries) ListIdleApps(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIdleApps)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setAppStatus = `-- name: SetAppStatus :exec
 UPDATE apps SET status = $1::text WHERE id = $2
 `

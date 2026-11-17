@@ -34,6 +34,7 @@ const (
 	KindStop    = "stop"    // stop an app's containers (user stop, delete)
 	KindLaunch  = "launch"  // start a stopped app from its live deploy
 	KindRestart = "restart" // stop, then launch
+	KindSleep   = "sleep"   // stop an idle app but keep it wanted; the router wakes it with launch
 )
 
 // DeployPayload is the payload of build and start jobs.
@@ -81,7 +82,7 @@ type Pipeline struct {
 func (p *Pipeline) Handlers() map[string]jobs.Handler {
 	return map[string]jobs.Handler{
 		KindBuild: p.Build, KindStart: p.Start,
-		KindStop: p.Stop, KindLaunch: p.Launch, KindRestart: p.Restart,
+		KindStop: p.Stop, KindLaunch: p.Launch, KindRestart: p.Restart, KindSleep: p.Sleep,
 	}
 }
 
