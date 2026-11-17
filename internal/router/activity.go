@@ -28,6 +28,34 @@ func (a *activity) mark(appID string) {
 	a.mu.Unlock()
 }
 
+// hold keeps appID active while a long-lived connection (a WebSocket) is open:
+// it marks the app every interval, and once more when release is called, so
+// the idle clock starts when the connection closes.
+func (a *activity) hold(appID string, every time.Duration) (release func()) {
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				select {
+				case <-done: // released while the tick was pending
+					return
+				default:
+				}
+				a.mark(appID)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		a.mark(appID)
+	}
+}
+
 func (a *activity) drain() map[string]time.Time {
 	a.mu.Lock()
 	defer a.mu.Unlock()

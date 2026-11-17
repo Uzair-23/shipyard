@@ -322,3 +322,98 @@ func TestAccessDecisionsFollowMembershipAfterTheCacheExpires(t *testing.T) {
 	}
 	waitFor(t, "public visibility to open the app", func() bool { return can(guestID, guest) })
 }
+
+// seedSleeping creates a public app that went to sleep: live deploy, no running instance.
+func seedSleeping(t *testing.T, slug string) string {
+	t.Helper()
+	ctx := context.Background()
+	var appID string
+	if err := testPool.QueryRow(ctx, `INSERT INTO apps (slug, status, visibility) VALUES ($1, 'sleeping', 'public') RETURNING id::text`, slug).Scan(&appID); err != nil {
+		t.Fatal(err)
+	}
+	var deployID string
+	if err := testPool.QueryRow(ctx, `INSERT INTO deploys (app_id, seq, source_ref, state) VALUES ($1, 1, 'sha256:x', 'live') RETURNING id::text`, appID).Scan(&deployID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `INSERT INTO instances (deploy_id, state) VALUES ($1, 'stopped')`, deployID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE apps SET current_deploy_id = $1 WHERE id = $2`, deployID, appID); err != nil {
+		t.Fatal(err)
+	}
+	return appID
+}
+
+func launchJobs(t *testing.T, appID string) int {
+	t.Helper()
+	var n int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM jobs WHERE app_id = $1 AND kind = 'launch'`, appID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// 50 concurrent requests to a sleeping app cause exactly one start job; once the
+// (simulated) worker brings the app up, every request is served and the cold start is stored.
+func TestFiftyRequestsToSleepingAppEnqueueOneLaunch(t *testing.T) {
+	ctx := context.Background()
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("awake")) }))
+	defer app.Close()
+	appPort, _ := strconv.Atoi(strings.TrimPrefix(app.URL, "http://127.0.0.1:"))
+
+	slug := uniq("sleeper")
+	appID := seedSleeping(t, slug)
+	r := startRouter(t, time.Minute, time.Minute)
+	r.WakeTimeout = 20 * time.Second
+	waitUntil(t, "sleeping route", func() bool { _, ok := r.table.Lookup(slug); return ok })
+	front := httptest.NewServer(r.Handler())
+	defer front.Close()
+
+	const n = 50
+	codes := make(chan int, n)
+	for range n {
+		go func() {
+			req, _ := http.NewRequest(http.MethodGet, front.URL+"/", nil)
+			req.Host = slug + ".apps.localhost"
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				codes <- 0
+				return
+			}
+			_ = resp.Body.Close()
+			codes <- resp.StatusCode
+		}()
+	}
+	waitUntil(t, "the launch job", func() bool { return launchJobs(t, appID) >= 1 })
+	time.Sleep(300 * time.Millisecond) // let the other requests arrive and join the wake
+	if got := launchJobs(t, appID); got != 1 {
+		t.Fatalf("launch jobs = %d, want exactly 1", got)
+	}
+
+	// The worker's launch job, simulated: a running instance, status running, NOTIFY.
+	if _, err := testPool.Exec(ctx, `UPDATE instances SET state = 'running', host_port = $1 WHERE deploy_id = (SELECT current_deploy_id FROM apps WHERE id = $2)`, appPort, appID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE apps SET status = 'running' WHERE id = $1`, appID); err != nil {
+		t.Fatal(err)
+	}
+	notify(t, appID)
+
+	for range n {
+		select {
+		case c := <-codes:
+			if c != http.StatusOK {
+				t.Fatalf("a request got %d", c)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatal("requests were not released after the app woke")
+		}
+	}
+	if got := launchJobs(t, appID); got != 1 {
+		t.Fatalf("launch jobs after wake = %d, want 1", got)
+	}
+	var ms *int32
+	if err := testPool.QueryRow(ctx, `SELECT last_cold_start_ms FROM apps WHERE id = $1`, appID).Scan(&ms); err != nil || ms == nil || *ms <= 0 {
+		t.Fatalf("last_cold_start_ms = %v (%v), want a positive value", ms, err)
+	}
+}

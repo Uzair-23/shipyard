@@ -53,8 +53,9 @@ type appView struct {
 	URL           string      `json:"url"`
 	Visibility    string      `json:"visibility"` // "private" (owner and members) or "public"
 	IdleTimeoutS  int32       `json:"idle_timeout_s"`
-	CurrentDeploy *deployView `json:"current_deploy"` // the deploy being served, if any
-	LatestDeploy  *deployView `json:"latest_deploy"`  // the newest deploy, whatever its state (building, failed, ...)
+	LastColdStart *int32      `json:"last_cold_start_ms"` // how long the last wake took; null if it never slept
+	CurrentDeploy *deployView `json:"current_deploy"`     // the deploy being served, if any
+	LatestDeploy  *deployView `json:"latest_deploy"`      // the newest deploy, whatever its state (building, failed, ...)
 	CreatedAt     time.Time   `json:"created_at"`
 }
 
@@ -72,6 +73,9 @@ func (a *Apps) viewOf(row store.GetOwnedAppRow) appView {
 	v := appView{
 		Slug: row.Slug, Status: row.Status, URL: a.appURL(row.Slug), Visibility: row.Visibility, IdleTimeoutS: row.IdleTimeoutS,
 		CreatedAt: row.CreatedAt.Time.UTC(),
+	}
+	if row.LastColdStartMs.Valid {
+		v.LastColdStart = &row.LastColdStartMs.Int32
 	}
 	if row.CurrentSeq.Valid {
 		v.CurrentDeploy = &deployView{Seq: row.CurrentSeq.Int32, State: row.CurrentState.String, FinishedAt: timePtr(row.CurrentFinishedAt)}

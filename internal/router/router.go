@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/Uzair-23/shipyard/internal/apps"
 	"github.com/Uzair-23/shipyard/internal/store"
 )
 
@@ -30,6 +31,12 @@ type Router struct {
 	Backend Backend
 	// AccessCacheTTL is how long an access decision is remembered; default 60 s.
 	AccessCacheTTL time.Duration
+
+	// Waking a sleeping app: total wait (default 30 s), how long a browser page
+	// request waits before the "Waking up" page (1.5 s), and waiting requests per app (100).
+	WakeTimeout time.Duration
+	BrowserWait time.Duration
+	MaxWaiters  int
 
 	ReloadInterval time.Duration // full reload fallback; default 5s
 	FlushInterval  time.Duration // last_request_at flush; default 10s
@@ -53,7 +60,42 @@ func (r *Router) Handler() http.Handler {
 		}
 		g = &gate{backend: be, key: r.CookieKey, baseDomain: r.BaseDomain}
 	}
-	return newHandler(r.table, r.AppsDomain, r.act, g)
+	h := newHandler(r.table, r.AppsDomain, r.act, g)
+	h.wake = newWaker(r.table, r.enqueueLaunch, r.recordColdStart)
+	if r.WakeTimeout > 0 {
+		h.wake.timeout = r.WakeTimeout
+	}
+	if r.BrowserWait > 0 {
+		h.wake.browserWait = r.BrowserWait
+	}
+	if r.MaxWaiters > 0 {
+		h.wake.maxWaiters = r.MaxWaiters
+	}
+	return h
+}
+
+// enqueueLaunch asks the worker to start a sleeping app's live deploy again.
+func (r *Router) enqueueLaunch(ctx context.Context, appID string) error {
+	var id pgtype.UUID
+	if err := id.Scan(appID); err != nil {
+		return fmt.Errorf("app id %q: %w", appID, err)
+	}
+	return apps.EnqueueAppJob(ctx, r.Pool, apps.KindLaunch, id)
+}
+
+// recordColdStart logs how long a wake took and stores it for the dashboard.
+func (r *Router) recordColdStart(appID, slug string, d time.Duration) {
+	ms := d.Milliseconds()
+	slog.Info("app woke up", "app_id", appID, "slug", slug, "cold_start_ms", ms)
+	var id pgtype.UUID
+	if err := id.Scan(appID); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := store.New(r.Pool).SetColdStart(ctx, store.SetColdStartParams{Ms: int32(min(ms, 1<<31-1)), ID: id}); err != nil { //nolint:gosec // clamped
+		slog.Warn("record cold start failed", "app_id", appID, "error", err)
+	}
 }
 
 // Run listens on Addr and serves until ctx is cancelled.

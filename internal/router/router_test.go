@@ -202,11 +202,13 @@ func TestPagesEscapeTheSlug(t *testing.T) {
 func TestReservedPathNeverReachesApp(t *testing.T) {
 	port, seen := upstream(t)
 	h, _ := newTestHandler(Route{AppID: "a", Slug: "demo", Port: port})
-	for _, p := range []string{"/__shipyard/callback", "/__shipyard/ready", "/__shipyard/anything"} {
+	for _, p := range []string{"/__shipyard/callback", "/__shipyard/anything"} {
 		if rec := do(h, "demo.apps.localhost", p, nil); rec.Code != http.StatusNotFound {
 			t.Errorf("%s: status %d", p, rec.Code)
 		}
 	}
+	// /__shipyard/ready is answered by the router itself (see wake_test.go), never by the app.
+	do(h, "demo.apps.localhost", "/__shipyard/ready", nil)
 	select {
 	case r := <-seen:
 		t.Fatalf("reserved path was proxied: %s", r.URL.Path)

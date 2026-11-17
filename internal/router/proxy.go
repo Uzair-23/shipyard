@@ -17,6 +17,10 @@ const (
 	appCookie      = "_sy_app"
 	reservedPrefix = "/__shipyard/"
 	callbackPath   = "/__shipyard/callback"
+	readyPath      = "/__shipyard/ready"
+
+	// wsKeepAlive is how often an open WebSocket counts as activity.
+	wsKeepAlive = 10 * time.Second
 )
 
 // cleanHeaderValue is true for a non-empty value without control characters.
@@ -37,7 +41,8 @@ type handler struct {
 	table      *Table
 	appsDomain string
 	act        *activity
-	gate       *gate // nil: private apps are refused
+	gate       *gate  // nil: private apps are refused
+	wake       *waker // nil: sleeping apps are not woken
 	proxy      *httputil.ReverseProxy
 }
 
@@ -81,7 +86,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writePage(w, http.StatusNotFound, "No app named "+slug, "There is no app at this address.")
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, reservedPrefix) {
+	if strings.HasPrefix(r.URL.Path, reservedPrefix) && r.URL.Path != readyPath {
 		// Reserved for the router; never proxied.
 		if r.URL.Path == callbackPath && h.gate != nil {
 			h.gate.callback(w, r, route)
@@ -100,13 +105,70 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writePage(w, http.StatusServiceUnavailable, "Access check unavailable", "This router has no access control configured, so it only serves public apps.")
 		return
 	}
-	if route.Port == 0 {
-		writePage(w, http.StatusServiceUnavailable, "The app is not running",
-			"This app is stopped or still starting. Start it from the dashboard, or try again in a moment.")
+	if r.URL.Path == readyPath { // reserved, never proxied; reached only after the access check
+		h.ready(w, route)
 		return
 	}
+	if route.Port == 0 {
+		if h.wake == nil || (route.Status != "sleeping" && route.Status != "starting") {
+			writePage(w, http.StatusServiceUnavailable, "The app is not running",
+				"This app is stopped or still starting. Start it from the dashboard, or try again in a moment.")
+			return
+		}
+		// An authorised request for a sleeping app wakes it and waits (ROADMAP 3A).
+		h.act.mark(route.AppID)
+		var out outcome
+		route, out = h.wake.await(r.Context(), route, wantsHTML(r))
+		switch out {
+		case outReady:
+		case outStillWaking:
+			writeWakingPage(w)
+			return
+		case outOverloaded:
+			writeBusy(w, "This app is waking up", "Many requests are waiting for it. Try again in a few seconds.")
+			return
+		case outFailed:
+			writeBusy(w, "The app did not wake up", "It did not start in time. Try again in a moment, or start it from the dashboard.")
+			return
+		default: // the client went away
+			return
+		}
+	}
 	h.act.mark(route.AppID)
+	if isUpgrade(r) {
+		defer h.act.hold(route.AppID, wsKeepAlive)() // an open WebSocket is activity
+	}
 	h.proxy.ServeHTTP(w, r.WithContext(withInfo(r.Context(), reqInfo{Route: route, Identity: identity})))
+}
+
+// ready answers the waking page's poll: 200 once the app runs, 202 while it
+// is waking (and makes sure a wake is under way), 503 if it is not going to.
+func (h *handler) ready(w http.ResponseWriter, route Route) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	switch {
+	case routeRunning(route):
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ready":true}`))
+	case h.wake != nil && (route.Status == "sleeping" || route.Status == "starting"):
+		h.wake.kick(route)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ready":false}`))
+	default:
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"ready":false}`))
+	}
+}
+
+// wantsHTML is true for a browser loading a page.
+func wantsHTML(r *http.Request) bool {
+	return r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html")
+}
+
+// isUpgrade is true for a WebSocket handshake.
+func isUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 }
 
 func (h *handler) rewrite(pr *httputil.ProxyRequest) {

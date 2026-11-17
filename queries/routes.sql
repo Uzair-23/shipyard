@@ -31,3 +31,7 @@ SELECT pg_notify('route_changes', sqlc.arg(app_id)::uuid::text);
 UPDATE apps SET last_request_at = v.ts
 FROM (SELECT unnest(sqlc.arg(ids)::uuid[]) AS id, unnest(sqlc.arg(times)::timestamptz[]) AS ts) v
 WHERE apps.id = v.id AND (apps.last_request_at IS NULL OR apps.last_request_at < v.ts);
+
+-- name: SetColdStart :exec
+-- Recorded by the router after it woke a sleeping app.
+UPDATE apps SET last_cold_start_ms = @ms::int WHERE id = @id;

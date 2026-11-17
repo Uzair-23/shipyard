@@ -102,6 +102,21 @@ func (q *Queries) NotifyRouteChange(ctx context.Context, appID pgtype.UUID) erro
 	return err
 }
 
+const setColdStart = `-- name: SetColdStart :exec
+UPDATE apps SET last_cold_start_ms = $1::int WHERE id = $2
+`
+
+type SetColdStartParams struct {
+	Ms int32
+	ID pgtype.UUID
+}
+
+// Recorded by the router after it woke a sleeping app.
+func (q *Queries) SetColdStart(ctx context.Context, arg SetColdStartParams) error {
+	_, err := q.db.Exec(ctx, setColdStart, arg.Ms, arg.ID)
+	return err
+}
+
 const touchApps = `-- name: TouchApps :exec
 UPDATE apps SET last_request_at = v.ts
 FROM (SELECT unnest($1::uuid[]) AS id, unnest($2::timestamptz[]) AS ts) v

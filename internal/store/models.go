@@ -21,6 +21,7 @@ type App struct {
 	DeletedAt       pgtype.Timestamptz
 	CreatedAt       pgtype.Timestamptz
 	Visibility      string
+	LastColdStartMs pgtype.Int4
 }
 
 type AppMember struct {

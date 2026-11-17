@@ -230,6 +230,21 @@ func TestPatchIdleTimeout(t *testing.T) {
 	}
 }
 
+// The app JSON carries how long the last wake took (set by the router), null before any.
+func TestAppShowsLastColdStart(t *testing.T) {
+	e := newEnv(t)
+	e.createApp(t, "cold-app")
+	if rec := e.call(t, e.cookie, http.MethodGet, "/api/v1/apps/cold-app", nil); !strings.Contains(rec.Body.String(), `"last_cold_start_ms":null`) {
+		t.Fatalf("before any wake: %s", rec.Body)
+	}
+	if _, err := testPool.Exec(context.Background(), `UPDATE apps SET last_cold_start_ms = 1834 WHERE slug = 'cold-app'`); err != nil {
+		t.Fatal(err)
+	}
+	if rec := e.call(t, e.cookie, http.MethodGet, "/api/v1/apps/cold-app", nil); !strings.Contains(rec.Body.String(), `"last_cold_start_ms":1834`) {
+		t.Fatalf("after a wake: %s", rec.Body)
+	}
+}
+
 // Mutating auth routes get the same Origin check as every other route.
 func TestAuthRoutesRefuseCrossSiteOrigin(t *testing.T) {
 	e := newEnv(t)
