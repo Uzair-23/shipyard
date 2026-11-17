@@ -36,6 +36,8 @@ export interface AppSummary {
 export interface App extends AppSummary {
   visibility: Visibility
   idle_timeout_s: number
+  /** How long the last wake from sleep took, in ms; null if it never slept. */
+  last_cold_start_ms: number | null
   current_deploy: Deploy | null
   latest_deploy: Deploy | null
 }

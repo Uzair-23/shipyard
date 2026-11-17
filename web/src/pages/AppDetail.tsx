@@ -100,6 +100,7 @@ function Overview({ app, onAction }: { app: App; onAction: () => void }) {
         </div>
         <div>Visibility: {app.visibility}</div>
         <div>Serving deploy: {cur ? `#${cur.seq}` : 'none yet'}</div>
+        {app.last_cold_start_ms !== null && <div>Last wake from sleep: {app.last_cold_start_ms} ms</div>}
         <div className="flex flex-wrap gap-2 pt-2">
           <button className={btnGhost} disabled={action.isPending} onClick={() => action.mutate('start')}>
             Start
