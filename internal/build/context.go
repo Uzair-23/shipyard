@@ -10,7 +10,7 @@ import (
 )
 
 // maxInspectedFileBytes bounds how much of the small top-level files the
-// build plan reads (shipyard.toml, requirements.txt, pyproject.toml).
+// build plan reads (shipyard.toml, requirements.txt, pyproject.toml, package.json).
 const maxInspectedFileBytes = 64 << 10
 
 // ReadSource scans a normalised archive (NormalizeFile output) and returns the
@@ -45,6 +45,8 @@ func ReadSource(r io.Reader) (src Source, config []byte, err error) {
 			dst = &src.Requirements
 		case "pyproject.toml":
 			dst = &src.PyProject
+		case "package.json":
+			dst = &src.PackageJSON
 		default:
 			continue
 		}

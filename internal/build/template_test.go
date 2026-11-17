@@ -237,6 +237,14 @@ func TestDefaultStart(t *testing.T) {
 		{"options and comments ignored", Python, Source{Paths: []string{"app.py"}, Requirements: []byte("-r base.txt\n--index-url https://x\n  # flask\n")}, "python app.py", nil},
 		{"oversized requirements ignored", Python, Source{Paths: []string{"app.py"}, Requirements: []byte("flask\n" + strings.Repeat("#", 70<<10))}, "python app.py", nil},
 		{"deeply nested pyproject ignored", Python, Source{Paths: []string{"app.py", "pyproject.toml"}, PyProject: []byte(strings.Repeat("[", 1<<20))}, "python app.py", nil},
+		{"node with start script", Node, Source{Paths: []string{"package.json"}, PackageJSON: []byte(`{"scripts":{"start":"node x.js"}}`)}, "npm start", nil},
+		{"node with server.js and no start script", Node, Source{Paths: []string{"package.json", "server.js"}, PackageJSON: []byte(`{"name":"x"}`)}, "npm start", nil},
+		{"node without package.json details", Node, Source{Paths: []string{"package.json"}}, "npm start", nil},
+		{"vite react project", Node, Source{Paths: []string{"package.json", "index.html", "src/main.jsx"}, PackageJSON: []byte(`{"scripts":{"dev":"vite","build":"vite build","preview":"vite preview"}}`)}, "", ErrFrontendProject},
+		{"build script but also a start script", Node, Source{Paths: []string{"package.json"}, PackageJSON: []byte(`{"scripts":{"build":"tsc","start":"node dist/index.js"}}`)}, "npm start", nil},
+		{"node with nothing to run", Node, Source{Paths: []string{"package.json"}, PackageJSON: []byte(`{"scripts":{"test":"jest"}}`)}, "", ErrNoNodeStart},
+		{"unreadable package.json is not judged", Node, Source{Paths: []string{"package.json"}, PackageJSON: []byte(`{not json`)}, "npm start", nil},
+		{"oversized package.json is not judged", Node, Source{Paths: []string{"package.json"}, PackageJSON: []byte(`{"scripts":{"build":"x"},"pad":"` + strings.Repeat("a", 70<<10) + `"}`)}, "npm start", nil},
 		{"malformed pyproject ignored", Python, Source{Paths: []string{"app.py", "pyproject.toml"}, PyProject: []byte("[[[")}, "python app.py", nil},
 	}
 	for _, tt := range tests {

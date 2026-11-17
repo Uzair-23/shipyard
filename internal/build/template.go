@@ -30,6 +30,7 @@ type Source struct {
 	Paths        []string // every path in the archive
 	Requirements []byte   // top-level requirements.txt, if present
 	PyProject    []byte   // top-level pyproject.toml, if present
+	PackageJSON  []byte   // top-level package.json, if present
 }
 
 // maxDepsFileBytes bounds how much of requirements.txt / pyproject.toml the
@@ -65,6 +66,38 @@ func validStart(start string) bool {
 var ErrNoStart = errors.New(`could not work out how to start the app: set start in shipyard.toml ` +
 	`(for example start = "python app.py"); the app must listen on $PORT`)
 
+// ErrFrontendProject means a Node project that is built into static files
+// (it has a build script but nothing to run), which Shipyard does not build.
+var ErrFrontendProject = errors.New(`this looks like a front-end project: package.json has a "build" script but no "start" script, ` +
+	`and Shipyard runs servers and static files; it does not run builds. Run "npm run build" on your machine, then upload ` +
+	`the contents of the build folder (dist/ or build/) as a .zip: it is served as a static site`)
+
+// ErrNoNodeStart means a Node project with nothing to run.
+var ErrNoNodeStart = errors.New(`package.json has no "start" script and there is no server.js: add a "start" script ` +
+	`(the app must listen on $PORT) or set start in shipyard.toml`)
+
+// nodeStartProblem explains why "npm start" would fail, or returns nil. npm
+// runs "node server.js" when there is no start script but a server.js exists.
+// A package.json that cannot be read is not judged: the build proceeds.
+func nodeStartProblem(src Source) error {
+	if len(src.PackageJSON) == 0 || len(src.PackageJSON) > maxDepsFileBytes {
+		return nil
+	}
+	var pkg struct {
+		Scripts map[string]json.RawMessage `json:"scripts"`
+	}
+	if json.Unmarshal(src.PackageJSON, &pkg) != nil {
+		return nil
+	}
+	if _, ok := pkg.Scripts["start"]; ok || src.has("server.js") {
+		return nil
+	}
+	if _, ok := pkg.Scripts["build"]; ok {
+		return ErrFrontendProject
+	}
+	return ErrNoNodeStart
+}
+
 // DefaultStart infers a start command when shipyard.toml does not set one.
 // Static sites have no start command.
 func DefaultStart(rt Runtime, src Source) (string, error) {
@@ -72,6 +105,9 @@ func DefaultStart(rt Runtime, src Source) (string, error) {
 	case Static:
 		return "", nil
 	case Node:
+		if err := nodeStartProblem(src); err != nil {
+			return "", err
+		}
 		return "npm start", nil
 	case Python:
 	default:

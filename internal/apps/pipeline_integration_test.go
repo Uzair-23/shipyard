@@ -230,6 +230,26 @@ func TestBuildUserErrorFailsDeploy(t *testing.T) {
 	}
 }
 
+// A React/Vite project has a build script and no start script: fail before any
+// image is built, with a message that says what to upload instead.
+func TestBuildFrontendProjectFailsWithAdvice(t *testing.T) {
+	f := newFixture(t, "vite-app")
+	id := f.upload(t, 1, map[string]string{
+		"package.json": `{"name":"web","scripts":{"dev":"vite","build":"vite build"}}`,
+		"index.html":   "<div id=root></div>",
+	})
+	if err := f.pipeline.Build(context.Background(), buildJob(t, id)); err != nil {
+		t.Fatalf("Build returned %v; user errors should not fail the job", err)
+	}
+	d := getDeploy(t, id)
+	if d.state != "failed" || !strings.Contains(d.errMsg, "npm run build") || !strings.Contains(d.errMsg, "static site") {
+		t.Fatalf("deploy = %+v", d)
+	}
+	if startJobs(t, id) != 0 {
+		t.Fatal("start job enqueued for a failed build")
+	}
+}
+
 func TestBuildFailingStepFailsDeploy(t *testing.T) {
 	f := newFixture(t, "bad-deps")
 	id := f.upload(t, 1, map[string]string{

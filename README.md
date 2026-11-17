@@ -137,7 +137,7 @@ Be honest about what this is: a working demo on one machine, not a service to ha
 - **Default development passwords.** Compose falls back to a well-known database password; require strong ones before sharing the instance.
 - **No quotas or abuse limits.** No cap on apps per user, no per-user rate limits, no source or image garbage collection, no free-disk guard. A deploy loop can fill the disk.
 - **gVisor is used only if installed;** otherwise the hardened `runc` profile is used and a warning is logged.
-- **Uploads are `.zip` or `.tar.gz`,** limited to 50 MB, 5,000 files, printable-ASCII file names, no encrypted zips; templates only (Python, Node, static), no custom Dockerfiles.
+- **Uploads are `.zip` or `.tar.gz`,** limited to 50 MB, 5,000 files, printable-ASCII file names, no encrypted zips; templates only (Python, Node, static), no custom Dockerfiles. **Shipyard does not run build steps:** a React/Vite app must be built on your machine (`npm run build`) and the contents of `dist/` uploaded as a static site (reloading a sub-page works; unknown paths fall back to `index.html`).
 - **No stored runtime logs** (only build logs), no crash back-off, no zero-downtime guarantees beyond "the old version serves until the new one is healthy", no rollback UI.
 - **Plain HTTP,** no TLS in the local setup; no password reset, e-mail verification or login rate limiting.
 - **Sign-up reveals whether an e-mail is registered** (it answers 409), and a master key lost from `data/master.key` makes stored variables unreadable (back it up, or set `SHIPYARD_MASTER_KEY`).
