@@ -87,7 +87,7 @@ func TestFailedBuildLogsTheReasonAfterTheBuildOutput(t *testing.T) {
 func TestFailedStartLogsTheReason(t *testing.T) {
 	f := newFixture(t, "log-start-fail")
 	f.pipeline.HealthTimeout = 3 * time.Second
-	d := builtDeploy(t, f, map[string]string{"index.html": "x", "shipyard.toml": `health = "/nope"`})
+	d := builtDeploy(t, f, map[string]string{"index.html": "x", "shipyard.toml": `health = "/nope.html"`})
 	if err := f.pipeline.Start(context.Background(), startJob(d)); err != nil {
 		t.Fatal(err)
 	}

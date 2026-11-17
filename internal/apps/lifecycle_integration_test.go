@@ -177,7 +177,7 @@ func TestLaunchUnhealthyAppIsMarkedCrashed(t *testing.T) {
 	}
 	// Make the stored health path wrong, as if the app had changed under us.
 	if _, err := testPool.Exec(context.Background(),
-		`UPDATE deploys SET config_snapshot = jsonb_set(config_snapshot, '{health}', '"/nope"') WHERE id = $1`, d); err != nil {
+		`UPDATE deploys SET config_snapshot = jsonb_set(config_snapshot, '{health}', '"/nope.html"') WHERE id = $1`, d); err != nil {
 		t.Fatal(err)
 	}
 	f.pipeline.HealthTimeout = 3_000_000_000 // 3 s

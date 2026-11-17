@@ -30,7 +30,7 @@ func liveURL(t *testing.T, deploy fmt.Stringer) string {
 func TestHealthCheckWrongPathFailsDeploy(t *testing.T) {
 	f := newFixture(t, "health-404")
 	f.pipeline.HealthTimeout = 3 * time.Second
-	id := builtDeploy(t, f, map[string]string{"index.html": "x", "shipyard.toml": `health = "/nope"`})
+	id := builtDeploy(t, f, map[string]string{"index.html": "x", "shipyard.toml": `health = "/nope.html"`})
 
 	if err := f.pipeline.Start(context.Background(), startJob(id)); err != nil {
 		t.Fatalf("Start returned %v; a failed health check is the app's fault, not a job error", err)
@@ -115,7 +115,7 @@ func TestFailedRedeployKeepsPreviousLive(t *testing.T) {
 	}
 	url := liveURL(t, first)
 
-	second := f.upload(t, 2, map[string]string{"index.html": "broken", "shipyard.toml": `health = "/missing"`})
+	second := f.upload(t, 2, map[string]string{"index.html": "broken", "shipyard.toml": `health = "/missing.html"`})
 	if err := f.pipeline.Build(context.Background(), buildJob(t, second)); err != nil {
 		t.Fatal(err)
 	}
