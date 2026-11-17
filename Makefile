@@ -1,7 +1,7 @@
 SHIPYARD_DATABASE_URL ?= postgres://shipyard:shipyard-dev@localhost:5434/shipyard?sslmode=disable
 export SHIPYARD_DATABASE_URL
 
-.PHONY: dev build test test-integration test-security lint fmt migrate sqlc worker router
+.PHONY: dev build test test-integration test-security lint fmt migrate sqlc worker router bench
 
 dev:
 	docker compose up -d --build
@@ -41,3 +41,7 @@ router:
 
 sqlc:
 	sqlc generate
+
+# Benchmarks (PRD 7.1): needs compose, worker and router running. See scripts/bench/run.sh.
+bench:
+	bash scripts/bench/run.sh
