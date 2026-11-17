@@ -62,7 +62,7 @@ export default function NewApp() {
       {created && seq === null && (
         <div className={`${card} space-y-3`}>
           <p className="text-sm">
-            <strong>{created}</strong> created. Upload your code as a <code>.tar.gz</code>.
+            <strong>{created}</strong> created. Upload your code as a <code>.zip</code> (or <code>.tar.gz</code>).
           </p>
           <UploadDrop busy={upload.isPending} onFile={(f) => upload.mutate(f)} />
           {upload.error instanceof ApiError && <p className="text-sm text-red-600">{upload.error.message}</p>}

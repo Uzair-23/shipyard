@@ -216,7 +216,8 @@ func TestNormalizeRejectsMalformedArchives(t *testing.T) {
 		data   []byte
 		reason string
 	}{
-		{"not gzip", []byte("PK\x03\x04 this is a zip"), "not a gzip"},
+		{"not gzip", []byte("plain text, neither zip nor gzip"), "not a .zip or .tar.gz"},
+		{"garbage that looks like a zip", []byte("PK\x03\x04 this is a zip"), "not a valid zip"},
 		{"gzip of garbage", gzipBytes(t, bytes.Repeat([]byte("not a tar header "), 64)), "corrupt tar"},
 		{"truncated", truncated(targz(t, file("a", strings.Repeat("x", 4096)))), "corrupt"},
 		{"second tar after end-of-archive", gzipBytes(t, append(good, rawTar(t, file("../evil", "x"))...)), "after the end of the tar archive"},

@@ -16,7 +16,7 @@ Someone writes a small tool (a Flask dashboard, a Node script with a UI, a stati
 
 ## What it does
 
-- **Deploy from an archive.** Upload a `.tar.gz` (Python, Node or static, detected automatically, optional `shipyard.toml`). It is built from a fixed Dockerfile template, pushed to a local registry, started, health-checked and routed. A redeploy keeps serving the old version until the new one is healthy.
+- **Deploy from an archive.** Upload a `.zip` (right-click your folder and compress it) or a `.tar.gz` (Python, Node or static, detected automatically, optional `shipyard.toml`). A single wrapper folder inside the zip is removed automatically. It is built from a fixed Dockerfile template, pushed to a local registry, started, health-checked and routed. A redeploy keeps serving the old version until the new one is healthy.
 - **Private by default.** Only the owner and invited e-mail addresses can open an app (login handoff, below). Or make it public.
 - **Secrets.** Environment variables and secrets, encrypted at rest (AES-256-GCM), never shown again after you save them, injected when the app starts.
 - **Live build logs** streamed to the dashboard over SSE.
@@ -99,7 +99,7 @@ cd web && npm ci && npm run dev
 
 Open **http://shipyard.localhost** (not `localhost:5173`: the login cookie and the API's origin check expect that host), sign up, then **New app**.
 
-To try it, pack one of the sample apps and upload it:
+To try it, pack one of the sample apps and upload it (a `.zip` made by your file manager works too):
 
 ```bash
 tar -czf whoami.tar.gz -C testdata/apps/whoami .      # prints who is visiting
@@ -137,7 +137,7 @@ Be honest about what this is: a working demo on one machine, not a service to ha
 - **Default development passwords.** Compose falls back to a well-known database password; require strong ones before sharing the instance.
 - **No quotas or abuse limits.** No cap on apps per user, no per-user rate limits, no source or image garbage collection, no free-disk guard. A deploy loop can fill the disk.
 - **gVisor is used only if installed;** otherwise the hardened `runc` profile is used and a warning is logged.
-- **Uploads are `.tar.gz` only,** limited to 50 MB, 5,000 files; templates only (Python, Node, static), no custom Dockerfiles.
+- **Uploads are `.zip` or `.tar.gz`,** limited to 50 MB, 5,000 files, printable-ASCII file names, no encrypted zips; templates only (Python, Node, static), no custom Dockerfiles.
 - **No stored runtime logs** (only build logs), no crash back-off, no zero-downtime guarantees beyond "the old version serves until the new one is healthy", no rollback UI.
 - **Plain HTTP,** no TLS in the local setup; no password reset, e-mail verification or login rate limiting.
 - **Sign-up reveals whether an e-mail is registered** (it answers 409), and a master key lost from `data/master.key` makes stored variables unreadable (back it up, or set `SHIPYARD_MASTER_KEY`).

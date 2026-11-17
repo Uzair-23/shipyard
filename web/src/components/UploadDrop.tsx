@@ -1,11 +1,11 @@
 import { useRef, useState } from 'react'
 import { toast } from '../lib/toast.ts'
 
-/** Drag-and-drop (or click) picker for a .tar.gz source archive. */
+/** Drag-and-drop (or click) picker for a .zip or .tar.gz source archive. */
 export default function UploadDrop({
   onFile,
   busy,
-  label = 'Drop a .tar.gz of your app here, or click to choose',
+  label = 'Drop a .zip of your app here, or click to choose',
 }: {
   onFile: (f: File) => void
   busy?: boolean
@@ -16,8 +16,8 @@ export default function UploadDrop({
 
   function pick(f: File | undefined) {
     if (!f) return
-    if (!/\.(tar\.gz|tgz)$/i.test(f.name)) {
-      toast('error', 'Only .tar.gz archives are accepted. Make one with: tar -czf app.tar.gz -C <folder> .')
+    if (!/\.(zip|tar\.gz|tgz)$/i.test(f.name)) {
+      toast('error', 'Please upload a .zip (right-click your folder and compress it) or a .tar.gz.')
       return
     }
     onFile(f)
@@ -44,7 +44,7 @@ export default function UploadDrop({
       <input
         ref={input}
         type="file"
-        accept=".gz,.tgz,application/gzip"
+        accept=".zip,.gz,.tgz,application/zip,application/gzip"
         className="hidden"
         onChange={(e) => {
           pick(e.target.files?.[0])

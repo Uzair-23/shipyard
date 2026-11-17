@@ -72,7 +72,8 @@ func reject(p, format string, args ...any) error {
 	return &UploadError{Path: p, Reason: fmt.Sprintf(format, args...)}
 }
 
-// NormalizeFile reads a gzip-compressed tar archive from src and, if it is
+// NormalizeFile reads a .tar.gz or a .zip archive from src (told apart by
+// their first bytes, not by a file name; see upload_zip.go) and, if it is
 // safe, writes a normalised gzip-compressed tar to dstPath. The output
 // contains only regular files, directories and symlinks, under the validated
 // names, with mode 0644 or 0755 (0755 for directories), uid/gid 0, zero
@@ -138,9 +139,12 @@ type node struct {
 // normalize reads from br, a bufio.Reader so that gzip does not read past the
 // first member and trailing data can be detected.
 func normalize(ctx context.Context, dst io.Writer, br *bufio.Reader, lim Limits) error {
+	if isZip(br) {
+		return normalizeZip(ctx, dst, br, lim)
+	}
 	gz, err := gzip.NewReader(br)
 	if err != nil {
-		return reject("", "not a gzip-compressed tar archive")
+		return reject("", "not a .zip or .tar.gz archive")
 	}
 	gz.Multistream(false)
 

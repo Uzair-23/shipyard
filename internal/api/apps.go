@@ -213,7 +213,7 @@ func (a *Apps) createDeploy(w http.ResponseWriter, r *http.Request) {
 	body := http.MaxBytesReader(w, r.Body, lim.MaxCompressedBytes+formOverhead)
 	mr, err := multipartReader(r, body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", `send multipart/form-data with a "source" file (a .tar.gz)`)
+		writeError(w, http.StatusBadRequest, "invalid_request", `send multipart/form-data with a "source" file (a .zip or .tar.gz)`)
 		return
 	}
 	root, err := a.openDataRoot()
@@ -318,7 +318,7 @@ func (a *Apps) uploadFailed(w http.ResponseWriter, err error) {
 	case errors.As(err, &mbe):
 		writeError(w, http.StatusRequestEntityTooLarge, "upload_too_large", "the upload is too large (limit 50 MB)")
 	case errors.Is(err, errNoSource):
-		writeError(w, http.StatusBadRequest, "invalid_request", `the form needs a "source" file (a .tar.gz)`)
+		writeError(w, http.StatusBadRequest, "invalid_request", `the form needs a "source" file (a .zip or .tar.gz)`)
 	case errors.Is(err, errBadForm):
 		writeError(w, http.StatusBadRequest, "invalid_request", "malformed multipart body")
 	default:
