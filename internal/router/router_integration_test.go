@@ -173,6 +173,7 @@ func TestLastRequestAtIsFlushed(t *testing.T) {
 	appID := seedApp(t, slug, p)
 
 	r := startRouter(t, time.Hour, 100*time.Millisecond)
+	waitFor(t, "route to load", func() bool { return port(r, slug) == p }) // Serve loads the table in a goroutine
 	front := httptest.NewServer(r.Handler())
 	defer front.Close()
 
