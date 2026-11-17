@@ -130,13 +130,12 @@ If any check fails, **do not commit**. Fix it, or record the state in `docs/PROG
    <type>(<scope>): <imperative summary, ≤ 72 chars>
 
    <what changed and why, 1–5 lines>
-
-   Roadmap: <block id, e.g. 1A> - <feature>
    ```
+   Never mention plan labels (day numbers, block ids like `2A`, "Day 2") in commit messages: they are for planning only. No `Roadmap:` trailer.
    Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`, `build`, `security`. Scope = package or area (`router`, `build`, `jobs`, `web`, `cli`, …).
-4. Push immediately: `git push origin <current branch>`.
+4. Push immediately: `git push origin main`.
+   - **Work only on `main`.** Don't create other branches or worktrees.
    - Rejected because the remote moved → `git pull --rebase`, re-run `make test`, push again.
-   - Day 2 worktrees commit to `day2-backend` and `day2-web`. Merge into `main` only after both work together and `make test` passes, then push `main`.
    - Auth or network failure → stop and tell the human. Leave the commit local.
 5. Note the short hash (`git rev-parse --short HEAD`) for the end-of-session PROGRESS.md entry.
 6. If the `gh` CLI is available, check CI with `gh run list --limit 1`. If CI is red, fixing it is the next task.

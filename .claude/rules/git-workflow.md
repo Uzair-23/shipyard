@@ -6,7 +6,7 @@ Full procedure is in CLAUDE.md ("Git workflow"). Summary:
   `make test-integration` green when DB/Docker/router/build is touched, security list re-checked,
   and the feature exercised once for real.
 - One commit per ROADMAP task, Conventional Commits: `<type>(<scope>): <summary ≤ 72 chars>`,
-  short body, and a `Roadmap: M<n> - <task name>` trailer.
+  short body. No day/block labels or `Roadmap:` trailer in messages. Work only on `main`; no other branches.
 - Before committing: `git status`; nothing under `docs/`, no `.env*` (except `.env.example`), no keys,
   no `CLAUDE.local.md`, no build output. Stage only this task's files.
 - Push with `git push origin main`. If rejected: `git pull --rebase origin main`, re-run `make test`, push again.
